@@ -1,0 +1,76 @@
+[
+    {
+        "content": [
+            {
+                "x": 118.5,
+                "y": 89
+            },
+            {
+                "x": 361.5,
+                "y": 89
+            },
+            {
+                "x": 361.5,
+                "y": 326
+            },
+            {
+                "x": 118.5,
+                "y": 326
+            }
+        ],
+        "rectMask": {
+            "xMin": 118.5,
+            "yMin": 89,
+            "width": 243,
+            "height": 237
+        },
+        "labels": {
+            "labelName": "Crab",
+            "labelColor": "#ff0000",
+            "labelColorRGB": "255,0,0",
+            "visibility": false
+        },
+        "labelLocation": {
+            "x": 240,
+            "y": 207.5
+        },
+        "contentType": "rect"
+    },
+    {
+        "content": [
+            {
+                "x": 171.5,
+                "y": 25
+            },
+            {
+                "x": 288.5,
+                "y": 25
+            },
+            {
+                "x": 288.5,
+                "y": 110
+            },
+            {
+                "x": 171.5,
+                "y": 110
+            }
+        ],
+        "rectMask": {
+            "xMin": 171.5,
+            "yMin": 25,
+            "width": 117,
+            "height": 85
+        },
+        "labels": {
+            "labelName": "Crab",
+            "labelColor": "#ff0000",
+            "labelColorRGB": "255,0,0",
+            "visibility": false
+        },
+        "labelLocation": {
+            "x": 230,
+            "y": 67.5
+        },
+        "contentType": "rect"
+    }
+]
