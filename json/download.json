@@ -1,0 +1,39 @@
+[
+    {
+        "content": [
+            {
+                "x": 50.5,
+                "y": 32
+            },
+            {
+                "x": 192.5,
+                "y": 32
+            },
+            {
+                "x": 192.5,
+                "y": 146
+            },
+            {
+                "x": 50.5,
+                "y": 146
+            }
+        ],
+        "rectMask": {
+            "xMin": 50.5,
+            "yMin": 32,
+            "width": 142,
+            "height": 114
+        },
+        "labels": {
+            "labelName": "Crab",
+            "labelColor": "#ff0000",
+            "labelColorRGB": "255,0,0",
+            "visibility": false
+        },
+        "labelLocation": {
+            "x": 121.5,
+            "y": 89
+        },
+        "contentType": "rect"
+    }
+]
