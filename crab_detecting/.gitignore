@@ -1,0 +1,8 @@
+venv_opencv/
+__pycache__/
+*.pyc
+.vscode/
+.idea/
+runs/detect/green_crab_detector/weights/last.pt
+runs/detect/green_crab_detector/*.csv
+runs/detect/green_crab_detector/*.png

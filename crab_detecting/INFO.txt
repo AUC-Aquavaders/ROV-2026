@@ -1,0 +1,22 @@
+European Green Crab Detection - YOLOv8
+
+Dataset: 2200 synthetic training images
+Model: YOLOv8n
+Accuracy: 94% on 200 test images (100% on negative examples)
+
+Training:
+python train_yolo.py
+
+Testing:
+python test_model.py --all
+
+Inference:
+from ultralytics import YOLO
+model = YOLO('runs/detect/green_crab_detector/weights/best.pt')
+results = model.predict('image.jpg')
+
+Requirements:
+- Python 3.12
+- ultralytics
+- opencv-python
+- torch (CUDA recommended)
