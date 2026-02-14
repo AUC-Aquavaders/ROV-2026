@@ -1,0 +1,50 @@
+# Iceberg Tracking System - Ignore File
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Data (generated during operation)
+data/surveys/*.db
+data/surveys/*.json
+data/logs/*.log
+data/exports/*.csv
+data/exports/*.txt
+
+# Keep data folder structure
+!data/.gitkeep
+!data/surveys/.gitkeep
+!data/logs/.gitkeep
+!data/exports/.gitkeep
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Backups
+*.bak
+*.backup
+config/backups/
+
+# Temporary files
+*.tmp
+*.temp
