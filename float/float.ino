@@ -1,0 +1,11 @@
+
+// PID PARAMETERS -- TUNE DURING TESTING!!!
+// SAMPLE VALUES JUST FOR REFERENCE
+double PID_P = 8.0;
+double PID_I = 0.3;
+double PID_D = 0.8;
+
+// define the syringe limits 
+// SAMPLE VALUES!! CHANGE THESE ACCORDING TO OUR SYRINGES
+double SYRINGE_MAX = 50;
+double SYRINGE_MIN = -50;
