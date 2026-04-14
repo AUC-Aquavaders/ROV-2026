@@ -1,0 +1,945 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Iceberg Threat Tracker</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0f1a;
+    --bg2: #0d1525;
+    --bg3: #111c2e;
+    --panel: #0f1a2e;
+    --border: rgba(99,179,237,0.15);
+    --border2: rgba(99,179,237,0.3);
+    --accent: #63b3ed;
+    --accent2: #4299e1;
+    --green: #68d391;
+    --green-bg: rgba(104,211,145,0.12);
+    --green-border: rgba(104,211,145,0.3);
+    --yellow: #f6e05e;
+    --yellow-bg: rgba(246,224,94,0.12);
+    --yellow-border: rgba(246,224,94,0.3);
+    --red: #fc8181;
+    --red-bg: rgba(252,129,129,0.12);
+    --red-border: rgba(252,129,129,0.3);
+    --text: #e2e8f0;
+    --text2: #94a3b8;
+    --text3: #64748b;
+    --mono: 'Space Mono', monospace;
+    --sans: 'IBM Plex Sans', sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    min-height: 100vh;
+    line-height: 1.6;
+  }
+
+  .app {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem;
+  }
+
+  header {
+    display: flex;
+    align-items: flex-end;
+    gap: 1.5rem;
+    margin-bottom: 2.5rem;
+    padding-bottom: 1.5rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .logo-icon {
+    width: 48px;
+    height: 48px;
+    flex-shrink: 0;
+  }
+
+  .header-text h1 {
+    font-family: var(--mono);
+    font-size: 1.4rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    color: var(--accent);
+  }
+
+  .header-text p {
+    font-size: 0.8rem;
+    color: var(--text3);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-top: 2px;
+  }
+
+  .main-layout {
+    display: grid;
+    grid-template-columns: 340px 1fr;
+    gap: 1.5rem;
+    align-items: start;
+  }
+
+  @media (max-width: 800px) {
+    .main-layout { grid-template-columns: 1fr; }
+  }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+
+  .panel-header {
+    padding: 12px 16px;
+    background: var(--bg3);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .panel-header span {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+
+  .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    animation: pulse 2s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+
+  .panel-body { padding: 16px; }
+
+  .section-label {
+    font-size: 0.65rem;
+    font-family: var(--mono);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text3);
+    margin-bottom: 10px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .field-group { margin-bottom: 18px; }
+
+  .field { margin-bottom: 10px; }
+
+  .field label {
+    display: block;
+    font-size: 0.72rem;
+    color: var(--text2);
+    margin-bottom: 4px;
+    font-family: var(--mono);
+  }
+
+  .field input {
+    width: 100%;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 7px 10px;
+    font-family: var(--mono);
+    font-size: 0.82rem;
+    color: var(--text);
+    outline: none;
+    transition: border-color 0.2s;
+  }
+
+  .field input:focus {
+    border-color: var(--accent2);
+    box-shadow: 0 0 0 2px rgba(66,153,225,0.15);
+  }
+
+  .field-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .platform-section {
+    margin-bottom: 14px;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+
+  .platform-header {
+    padding: 7px 12px;
+    background: rgba(99,179,237,0.06);
+    border-bottom: 1px solid var(--border);
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.1em;
+    color: var(--accent);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .platform-icon {
+    width: 10px;
+    height: 10px;
+    border: 1.5px solid var(--accent);
+    transform: rotate(45deg);
+    flex-shrink: 0;
+  }
+
+  .platform-fields { padding: 10px 12px; }
+
+  .calc-btn {
+    width: 100%;
+    padding: 11px;
+    background: var(--accent2);
+    border: none;
+    border-radius: 7px;
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #fff;
+    cursor: pointer;
+    transition: background 0.2s, transform 0.1s;
+    margin-top: 4px;
+  }
+
+  .calc-btn:hover { background: var(--accent); }
+  .calc-btn:active { transform: scale(0.98); }
+
+  .right-col { display: flex; flex-direction: column; gap: 1.5rem; }
+
+  .map-panel { height: 460px; position: relative; }
+
+  canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+
+  .map-legend {
+    position: absolute;
+    bottom: 14px;
+    right: 14px;
+    background: rgba(10,15,26,0.85);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 10px 12px;
+    font-family: var(--mono);
+    font-size: 0.65rem;
+    backdrop-filter: blur(4px);
+  }
+
+  .legend-row {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin-bottom: 5px;
+    color: var(--text2);
+  }
+
+  .legend-row:last-child { margin-bottom: 0; }
+
+  .legend-swatch {
+    width: 12px;
+    height: 12px;
+    border-radius: 2px;
+    flex-shrink: 0;
+  }
+
+  .results-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+  }
+
+  @media (max-width: 600px) {
+    .results-grid { grid-template-columns: 1fr; }
+  }
+
+  .result-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    transition: border-color 0.2s;
+  }
+
+  .result-card-header {
+    padding: 10px 14px;
+    background: var(--bg3);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .result-platform-name {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: var(--text);
+  }
+
+  .result-dist {
+    font-family: var(--mono);
+    font-size: 0.65rem;
+    color: var(--text3);
+  }
+
+  .result-card-body { padding: 12px 14px; }
+
+  .threat-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .threat-row:last-child { border-bottom: none; }
+
+  .threat-type {
+    font-size: 0.72rem;
+    color: var(--text2);
+    font-family: var(--mono);
+  }
+
+  .badge {
+    font-family: var(--mono);
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 3px 9px;
+    border-radius: 4px;
+  }
+
+  .badge-green { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-border); }
+  .badge-yellow { background: var(--yellow-bg); color: var(--yellow); border: 1px solid var(--yellow-border); }
+  .badge-red { background: var(--red-bg); color: var(--red); border: 1px solid var(--red-border); }
+
+  .result-meta {
+    font-size: 0.65rem;
+    color: var(--text3);
+    font-family: var(--mono);
+    margin-top: 8px;
+    line-height: 1.8;
+  }
+
+  .placeholder-msg {
+    text-align: center;
+    padding: 3rem 1rem;
+    color: var(--text3);
+    font-size: 0.8rem;
+    font-family: var(--mono);
+  }
+
+  .status-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px;
+    background: var(--bg3);
+    border-top: 1px solid var(--border);
+    font-family: var(--mono);
+    font-size: 0.65rem;
+    color: var(--text3);
+    letter-spacing: 0.06em;
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <header>
+    <svg class="logo-icon" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <polygon points="24,4 36,28 12,28" fill="none" stroke="#63b3ed" stroke-width="1.5"/>
+      <polygon points="24,28 32,44 16,44" fill="rgba(99,179,237,0.15)" stroke="#63b3ed" stroke-width="1"/>
+      <line x1="24" y1="4" x2="24" y2="44" stroke="rgba(99,179,237,0.3)" stroke-width="0.5" stroke-dasharray="3,3"/>
+      <circle cx="24" cy="28" r="2.5" fill="#63b3ed"/>
+    </svg>
+    <div class="header-text">
+      <h1>ICEBERG THREAT TRACKER</h1>
+      <p>Offshore Platform Risk Assessment System</p>
+    </div>
+  </header>
+
+  <div class="main-layout">
+
+    <!-- INPUT PANEL -->
+    <div class="panel">
+      <div class="panel-header">
+        <div class="dot"></div>
+        <span>Input Parameters</span>
+      </div>
+      <div class="panel-body">
+
+        <div class="field-group">
+          <div class="section-label">Iceberg Data</div>
+          <div class="field" style="margin-bottom:14px;">
+            <label>Latitude (DMS)</label>
+            <div class="field-row">
+              <div style="display:flex; gap:4px; align-items:flex-end;">
+                <div style="flex:1;">
+                  <label style="font-size:0.65rem; margin-bottom:2px;">Deg</label>
+                  <input id="iLatD" type="number" value="47" step="1" min="0" max="90">
+                </div>
+                <div style="flex:1;">
+                  <label style="font-size:0.65rem; margin-bottom:2px;">Min</label>
+                  <input id="iLatM" type="number" value="39" step="1" min="0" max="59">
+                </div>
+                <div style="flex:2;">
+                  <label style="font-size:0.65rem; margin-bottom:2px;">Sec</label>
+                  <input id="iLatS" type="number" value="0" step="0.1" min="0" max="59.9">
+                </div>
+                <span style="margin-bottom:7px; color:var(--text3); font-size:0.7rem;">°N</span>
+              </div>
+            </div>
+          </div>
+          <div class="field">
+            <label>Longitude (DMS)</label>
+            <div class="field-row">
+              <div style="display:flex; gap:4px; align-items:flex-end;">
+                <div style="flex:1;">
+                  <label style="font-size:0.65rem; margin-bottom:2px;">Deg</label>
+                  <input id="iLonD" type="number" value="48" step="1" min="0" max="180">
+                </div>
+                <div style="flex:1;">
+                  <label style="font-size:0.65rem; margin-bottom:2px;">Min</label>
+                  <input id="iLonM" type="number" value="37" step="1" min="0" max="59">
+                </div>
+                <div style="flex:2;">
+                  <label style="font-size:0.65rem; margin-bottom:2px;">Sec</label>
+                  <input id="iLonS" type="number" value="12" step="0.1" min="0" max="59.9">
+                </div>
+                <span style="margin-bottom:7px; color:var(--text3); font-size:0.7rem;">°W</span>
+              </div>
+            </div>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label>Heading (°)</label>
+              <input id="iHead" type="number" value="158" step="1" min="0" max="360">
+            </div>
+            <div class="field">
+              <label>Keel Depth (m)</label>
+              <input id="iKeel" type="number" value="99" step="1" min="0">
+            </div>
+          </div>
+        </div>
+
+  <div class="field-group">
+          <div class="section-label">Platform Locations</div>
+
+          <div id="platformInputs"></div>
+        </div>
+
+        <button class="calc-btn" onclick="calculate()">▶ Run Threat Analysis</button>
+      </div>
+      <div class="status-bar" id="statusBar">
+        <span>SYSTEM READY — enter data and run analysis</span>
+      </div>
+    </div>
+
+    <!-- RIGHT COLUMN: MAP + RESULTS -->
+    <div class="right-col">
+
+      <div class="panel map-panel">
+        <div class="panel-header">
+          <div class="dot"></div>
+          <span>Trajectory Map</span>
+        </div>
+        <canvas id="mapCanvas"></canvas>
+        <div class="map-legend">
+          <div class="legend-row"><div class="legend-swatch" style="background:#4299e1;border-radius:50%;"></div>Iceberg position</div>
+          <div class="legend-row"><div class="legend-swatch" style="background:transparent;border:1.5px dashed #4299e1;"></div>Projected track</div>
+          <div class="legend-row"><div class="legend-swatch" style="background:#68d391;clip-path:polygon(50% 0%,100% 100%,0% 100%);border-radius:0;"></div>Green — safe</div>
+          <div class="legend-row"><div class="legend-swatch" style="background:#f6e05e;clip-path:polygon(50% 0%,100% 100%,0% 100%);border-radius:0;"></div>Yellow — caution</div>
+          <div class="legend-row"><div class="legend-swatch" style="background:#fc8181;clip-path:polygon(50% 0%,100% 100%,0% 100%);border-radius:0;"></div>Red — danger</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <div class="dot"></div>
+          <span>Threat Assessment Results</span>
+        </div>
+        <div style="padding:16px;">
+          <div id="results">
+            <div class="placeholder-msg">Results will appear after running analysis</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+// ─── Platform default data ───────────────────────────────────────────────────
+const PLATFORM_DEFAULTS = [
+  { id: 'Hibernia', lat: 46.4502, lon: 48.7881, depth: 78 },
+  { id: 'Sea Rose', lat: 46.8506, lon: 48.1406, depth: 107 },
+  { id: 'Hebron', lat: 48.0667, lon: 48.5131, depth: 91 },
+  { id: 'Terra Nova', lat: 48.3856, lon: 48.8506, depth: 93 }
+];
+
+// ─── Build platform inputs ────────────────────────────────────────────────────
+function buildPlatformInputs() {
+  const container = document.getElementById('platformInputs');
+  container.innerHTML = PLATFORM_DEFAULTS.map((p, i) => {
+    const latDMS = decimalToDMS(p.lat);
+    const lonDMS = decimalToDMS(p.lon);
+    return `
+    <div class="platform-section">
+      <div class="platform-header">
+        <div class="platform-icon"></div>
+        PLATFORM ${p.id}
+      </div>
+      <div class="platform-fields">
+        <div style="margin-bottom:8px;">
+          <label style="font-size:0.7rem; margin-bottom:4px; display:block; color:var(--text2); font-family:var(--mono);">Latitude (DMS)</label>
+          <div style="display:flex; gap:4px; align-items:flex-end;">
+            <div style="flex:1;">
+              <label style="font-size:0.65rem; margin-bottom:2px; display:block;">Deg</label>
+              <input id="p${i}latd" type="number" value="${latDMS.deg}" step="1" min="0" max="90" style="width:100%; background:var(--bg2); border:1px solid var(--border); border-radius:6px; padding:7px 10px; font-family:var(--mono); font-size:0.82rem; color:var(--text); outline:none;">
+            </div>
+            <div style="flex:1;">
+              <label style="font-size:0.65rem; margin-bottom:2px; display:block;">Min</label>
+              <input id="p${i}latm" type="number" value="${latDMS.min}" step="1" min="0" max="59" style="width:100%; background:var(--bg2); border:1px solid var(--border); border-radius:6px; padding:7px 10px; font-family:var(--mono); font-size:0.82rem; color:var(--text); outline:none;">
+            </div>
+            <div style="flex:1.5;">
+              <label style="font-size:0.65rem; margin-bottom:2px; display:block;">Sec</label>
+              <input id="p${i}lats" type="number" value="${latDMS.sec}" step="0.1" min="0" max="59.9" style="width:100%; background:var(--bg2); border:1px solid var(--border); border-radius:6px; padding:7px 10px; font-family:var(--mono); font-size:0.82rem; color:var(--text); outline:none;">
+            </div>
+            <span style="color:var(--text3); font-size:0.7rem; margin-bottom:7px;">°N</span>
+          </div>
+        </div>
+        <div style="margin-bottom:8px;">
+          <label style="font-size:0.7rem; margin-bottom:4px; display:block; color:var(--text2); font-family:var(--mono);">Longitude (DMS)</label>
+          <div style="display:flex; gap:4px; align-items:flex-end;">
+            <div style="flex:1;">
+              <label style="font-size:0.65rem; margin-bottom:2px; display:block;">Deg</label>
+              <input id="p${i}lond" type="number" value="${lonDMS.deg}" step="1" min="0" max="180" style="width:100%; background:var(--bg2); border:1px solid var(--border); border-radius:6px; padding:7px 10px; font-family:var(--mono); font-size:0.82rem; color:var(--text); outline:none;">
+            </div>
+            <div style="flex:1;">
+              <label style="font-size:0.65rem; margin-bottom:2px; display:block;">Min</label>
+              <input id="p${i}lonm" type="number" value="${lonDMS.min}" step="1" min="0" max="59" style="width:100%; background:var(--bg2); border:1px solid var(--border); border-radius:6px; padding:7px 10px; font-family:var(--mono); font-size:0.82rem; color:var(--text); outline:none;">
+            </div>
+            <div style="flex:1.5;">
+              <label style="font-size:0.65rem; margin-bottom:2px; display:block;">Sec</label>
+              <input id="p${i}lons" type="number" value="${lonDMS.sec}" step="0.1" min="0" max="59.9" style="width:100%; background:var(--bg2); border:1px solid var(--border); border-radius:6px; padding:7px 10px; font-family:var(--mono); font-size:0.82rem; color:var(--text); outline:none;">
+            </div>
+            <span style="color:var(--text3); font-size:0.7rem; margin-bottom:7px;">°W</span>
+          </div>
+        </div>
+        <div class="field">
+          <label>Water Depth (m)</label>
+          <input id="p${i}dep" type="number" value="${p.depth}" step="1" min="1">
+        </div>
+      </div>
+    </div>
+  `}).join('');
+}
+
+buildPlatformInputs();
+
+// Add change listeners to ice berg DMS inputs
+['iLatD', 'iLatM', 'iLatS', 'iLonD', 'iLonM', 'iLonS', 'iHead', 'iKeel'].forEach(id => {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener('change', calculate);
+});
+
+// Add change listeners to platform DMS inputs
+PLATFORM_DEFAULTS.forEach((_, i) => {
+  ['latd', 'latm', 'lats', 'lond', 'lonm', 'lons', 'dep'].forEach(suffix => {
+    const el = document.getElementById(`p${i}${suffix}`);
+    if (el) el.addEventListener('change', calculate);
+  });
+});
+
+// ─── Math helpers ─────────────────────────────────────────────────────────────
+function toRad(d) { return d * Math.PI / 180; }
+
+// DMS (Degrees, Minutes, Seconds) to decimal degrees conversion
+function dmsToDecimal(deg, min, sec) {
+  return deg + min / 60 + sec / 3600;
+}
+
+// Decimal degrees to DMS conversion
+function decimalToDMS(decimal) {
+  const deg = Math.floor(decimal);
+  const minDec = (decimal - deg) * 60;
+  const min = Math.floor(minDec);
+  const sec = (minDec - min) * 60;
+  return { deg, min, sec: parseFloat(sec.toFixed(1)) };
+}
+
+// Closest approach in nautical miles from platform (pLat, pLon) to iceberg line
+function closestApproachNM(iLat, iLon, headDeg, pLat, pLon) {
+  // Convert to NM-based flat coords (NM)
+  const cosLat = Math.cos(toRad((iLat + pLat) / 2));
+  const dx = (pLon - iLon) * cosLat * 60;   // east-west NM
+  const dy = (pLat - iLat) * 60;             // north-south NM
+  // Unit vector along heading (headDeg from north, clockwise)
+  const ux = Math.sin(toRad(headDeg));
+  const uy = Math.cos(toRad(headDeg));
+  // Component of (dx,dy) perpendicular to track
+  const dot = dx * ux + dy * uy;
+  const perpX = dx - dot * ux;
+  const perpY = dy - dot * uy;
+  return Math.sqrt(perpX * perpX + perpY * perpY);
+}
+
+function surfaceThreat(distNM, keel, depth) {
+  if (keel >= depth * 1.10) return 'green';
+  if (distNM > 10) return 'green';
+  if (distNM > 5) return 'yellow';
+  return 'red';
+}
+
+function subseaThreat(distNM, keel, depth) {
+  if (distNM > 25) return 'green';
+  const r = keel / depth;
+  if (r >= 1.10) return 'green';
+  if (r >= 0.90) return 'red';
+  if (r >= 0.70) return 'yellow';
+  return 'green';
+}
+
+function surfaceReason(distNM, keel, depth) {
+  if (keel >= depth * 1.10) return `Keel ${keel}m ≥ 110% depth (${(depth*1.10).toFixed(0)}m) — grounds first`;
+  if (distNM > 10) return `Pass dist ${distNM.toFixed(1)} nm > 10 nm`;
+  if (distNM > 5) return `Pass dist ${distNM.toFixed(1)} nm in 5–10 nm zone`;
+  return `Pass dist ${distNM.toFixed(1)} nm < 5 nm`;
+}
+
+function subseareason(distNM, keel, depth) {
+  if (distNM > 25) return `Pass dist ${distNM.toFixed(1)} nm > 25 nm — no subsea risk`;
+  const r = keel / depth;
+  const pct = (r * 100).toFixed(0);
+  if (r >= 1.10) return `Keel/depth ratio ${pct}% ≥ 110% — grounds before reaching`;
+  if (r >= 0.90) return `Keel/depth ratio ${pct}% (90–110%) — critical subsea danger`;
+  if (r >= 0.70) return `Keel/depth ratio ${pct}% (70–90%) — keel may impact seafloor`;
+  return `Keel/depth ratio ${pct}% < 70% — no subsea risk`;
+}
+
+// ─── Canvas Map ───────────────────────────────────────────────────────────────
+let mapState = { minLat: 0, maxLat: 0, minLon: 0, maxLon: 0, m: 44, W: 0, H: 0 };
+
+function drawMap(iLat, iLon, iHead, platforms, results) {
+  const canvas = document.getElementById('mapCanvas');
+  const W = canvas.offsetWidth;
+  const H = canvas.offsetHeight;
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d');
+
+  const allLats = [iLat, ...platforms.map(p => p.lat)];
+  const allLons = [iLon, ...platforms.map(p => p.lon)];
+  const latRange = Math.max(...allLats) - Math.min(...allLats);
+  const lonRange = Math.max(...allLons) - Math.min(...allLons);
+  const pad = Math.max(latRange, lonRange) * 0.5;
+
+  const minLat = Math.min(...allLats) - pad;
+  const maxLat = Math.max(...allLats) + pad;
+  const minLon = Math.min(...allLons) - pad;
+  const maxLon = Math.max(...allLons) + pad;
+
+  const m = 44;
+  mapState = { minLat, maxLat, minLon, maxLon, m, W, H };
+  
+  const toX = lon => m + ((lon - minLon) / (maxLon - minLon)) * (W - 2 * m);
+  const toY = lat => (H - m) - ((lat - minLat) / (maxLat - minLat)) * (H - 2 * m);
+
+  // Ocean background
+  ctx.fillStyle = '#080e1c';
+  ctx.fillRect(0, 0, W, H);
+
+  // Subtle grid lines
+  ctx.strokeStyle = 'rgba(99,179,237,0.07)';
+  ctx.lineWidth = 1;
+  const latStep = (maxLat - minLat) / 6;
+  const lonStep = (maxLon - minLon) / 6;
+  for (let lat = minLat; lat <= maxLat + 0.01; lat += latStep) {
+    ctx.beginPath(); ctx.moveTo(m, toY(lat)); ctx.lineTo(W - m, toY(lat)); ctx.stroke();
+  }
+  for (let lon = minLon; lon <= maxLon + 0.01; lon += lonStep) {
+    ctx.beginPath(); ctx.moveTo(toX(lon), m); ctx.lineTo(toX(lon), H - m); ctx.stroke();
+  }
+
+  // Axis labels
+  ctx.fillStyle = 'rgba(99,179,237,0.5)';
+  ctx.font = '10px "Space Mono", monospace';
+  ctx.textAlign = 'center';
+  for (let lat = minLat; lat <= maxLat + 0.01; lat += latStep * 2) {
+    ctx.textAlign = 'right';
+    ctx.fillText(lat.toFixed(2) + '°N', m - 4, toY(lat) + 3);
+  }
+  ctx.textAlign = 'center';
+  for (let lon = minLon; lon <= maxLon + 0.01; lon += lonStep * 2) {
+    ctx.fillText(lon.toFixed(2) + '°W', toX(lon), H - 4);
+  }
+
+  // 25 NM range circles (subsea threshold)
+  platforms.forEach(p => {
+    const px = toX(p.lon), py = toY(p.lat);
+    const nmToPx = (W - 2 * m) / ((maxLon - minLon) * Math.cos(toRad(p.lat)) * 60);
+    const r25 = 25 * nmToPx;
+    const r10 = 10 * nmToPx;
+    const r5 = 5 * nmToPx;
+    ctx.strokeStyle = 'rgba(252,129,129,0.08)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 6]);
+    ctx.beginPath(); ctx.arc(px, py, r25, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = 'rgba(246,224,94,0.1)';
+    ctx.beginPath(); ctx.arc(px, py, r10, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = 'rgba(252,129,129,0.15)';
+    ctx.beginPath(); ctx.arc(px, py, r5, 0, Math.PI * 2); ctx.stroke();
+    ctx.setLineDash([]);
+  });
+
+  // Iceberg track line (forward projection only)
+  const cosLat = Math.cos(toRad(iLat));
+  const dLonPerNM = 1 / (cosLat * 60);
+  const dLatPerNM = 1 / 60;
+  const ux = Math.sin(toRad(iHead)) * dLonPerNM;
+  const uy = Math.cos(toRad(iHead)) * dLatPerNM;
+  const ext = 80; // nautical miles to extend forward
+  const startX = toX(iLon), startY = toY(iLat);
+  const endX = toX(iLon + ux * ext), endY = toY(iLat + uy * ext);
+
+  ctx.save();
+  ctx.setLineDash([8, 5]);
+  ctx.strokeStyle = 'rgba(66,153,225,0.6)';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(startX, startY); ctx.lineTo(endX, endY); ctx.stroke();
+  ctx.restore();
+
+  // Arrow along track direction
+  const arrowX = toX(iLon + ux * 8), arrowY = toY(iLat + uy * 8);
+  const ang = Math.atan2(arrowX - toX(iLon), -(arrowY - toY(iLat)));
+  ctx.save();
+  ctx.translate(arrowX, arrowY);
+  ctx.rotate(ang);
+  ctx.fillStyle = '#4299e1';
+  ctx.beginPath();
+  ctx.moveTo(0, -9); ctx.lineTo(5, 4); ctx.lineTo(-5, 4); ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+
+  // Platform triangles
+  const colorMap = { green: '#68d391', yellow: '#f6e05e', red: '#fc8181' };
+  platforms.forEach((p, i) => {
+    const px = toX(p.lon), py = toY(p.lat);
+    const col = colorMap[results[i].surf];
+    const size = 10;
+    ctx.beginPath();
+    ctx.moveTo(px, py - size);
+    ctx.lineTo(px + size * 0.85, py + size * 0.6);
+    ctx.lineTo(px - size * 0.85, py + size * 0.6);
+    ctx.closePath();
+    ctx.fillStyle = col + '33';
+    ctx.fill();
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // Label
+    ctx.fillStyle = col;
+    ctx.font = '10px "Space Mono", monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText(p.id, px + 12, py + 4);
+  });
+
+  // Iceberg dot
+  const ix = toX(iLon), iy = toY(iLat);
+  mapState.icebergX = ix;
+  mapState.icebergY = iy;
+  ctx.beginPath();
+  ctx.arc(ix, iy, 9, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(66,153,225,0.2)';
+  ctx.fill();
+  ctx.strokeStyle = '#63b3ed';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.arc(ix, iy, 4, 0, Math.PI * 2);
+  ctx.fillStyle = '#63b3ed';
+  ctx.fill();
+
+  ctx.fillStyle = '#63b3ed';
+  ctx.font = '10px "Space Mono", monospace';
+  ctx.textAlign = 'left';
+  ctx.fillText('ICEBERG', ix + 12, iy + 4);
+}
+
+// ─── Main calculation ─────────────────────────────────────────────────────────
+function calculate() {
+  const iLat = dmsToDecimal(
+    parseFloat(document.getElementById('iLatD').value),
+    parseFloat(document.getElementById('iLatM').value),
+    parseFloat(document.getElementById('iLatS').value)
+  );
+  const iLon = dmsToDecimal(
+    parseFloat(document.getElementById('iLonD').value),
+    parseFloat(document.getElementById('iLonM').value),
+    parseFloat(document.getElementById('iLonS').value)
+  );
+  const iHead = parseFloat(document.getElementById('iHead').value);
+  const iKeel = parseFloat(document.getElementById('iKeel').value);
+
+  const platforms = PLATFORM_DEFAULTS.map((def, i) => ({
+    id: def.id,
+    lat: dmsToDecimal(
+      parseFloat(document.getElementById(`p${i}latd`).value),
+      parseFloat(document.getElementById(`p${i}latm`).value),
+      parseFloat(document.getElementById(`p${i}lats`).value)
+    ),
+    lon: dmsToDecimal(
+      parseFloat(document.getElementById(`p${i}lond`).value),
+      parseFloat(document.getElementById(`p${i}lonm`).value),
+      parseFloat(document.getElementById(`p${i}lons`).value)
+    ),
+    depth: parseFloat(document.getElementById(`p${i}dep`).value)
+  }));
+
+  const results = platforms.map(p => {
+    const dist = closestApproachNM(iLat, iLon, iHead, p.lat, p.lon);
+    return {
+      ...p,
+      dist,
+      surf: surfaceThreat(dist, iKeel, p.depth),
+      sub: subseaThreat(dist, iKeel, p.depth),
+      surfReason: surfaceReason(dist, iKeel, p.depth),
+      subReason: subseareason(dist, iKeel, p.depth)
+    };
+  });
+
+  drawMap(iLat, iLon, iHead, platforms, results);
+
+  const badgeCls = l => l === 'green' ? 'badge-green' : l === 'yellow' ? 'badge-yellow' : 'badge-red';
+
+  document.getElementById('results').innerHTML = `
+    <div class="results-grid">
+      ${results.map(r => `
+        <div class="result-card">
+          <div class="result-card-header">
+            <span class="result-platform-name">Platform ${r.id}</span>
+            <span class="result-dist">${r.dist.toFixed(1)} nm closest pass</span>
+          </div>
+          <div class="result-card-body">
+            <div class="threat-row">
+              <span class="threat-type">Surface</span>
+              <span class="badge ${badgeCls(r.surf)}">${r.surf}</span>
+            </div>
+            <div class="threat-row">
+              <span class="threat-type">Subsea</span>
+              <span class="badge ${badgeCls(r.sub)}">${r.sub}</span>
+            </div>
+            <div class="result-meta">
+              Depth: ${r.depth} m &nbsp;|&nbsp; Keel: ${iKeel} m &nbsp;|&nbsp; Ratio: ${(iKeel/r.depth*100).toFixed(0)}%<br>
+              Surface: ${r.surfReason}<br>
+              Subsea: ${r.subReason}
+            </div>
+          </div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+
+  const highest = results.some(r => r.surf === 'red' || r.sub === 'red') ? 'red'
+    : results.some(r => r.surf === 'yellow' || r.sub === 'yellow') ? 'yellow' : 'green';
+  const statusColors = { green: '#68d391', yellow: '#f6e05e', red: '#fc8181' };
+  document.getElementById('statusBar').innerHTML = `
+    <span style="color:${statusColors[highest]}">&#9679;</span>
+    <span>ANALYSIS COMPLETE — Highest threat: <strong style="color:${statusColors[highest]}">${highest.toUpperCase()}</strong></span>
+  `;
+}
+
+// Run on load with defaults
+window.addEventListener('load', () => {
+  setTimeout(calculate, 100);
+  setupCanvasInteraction();
+});
+window.addEventListener('resize', () => {
+  const iLatD = parseFloat(document.getElementById('iLatD').value);
+  if (!isNaN(iLatD)) calculate();
+});
+
+// ─── Canvas Interaction ───────────────────────────────────────────────────────
+let isDraggingIceberg = false;
+
+function setupCanvasInteraction() {
+  const canvas = document.getElementById('mapCanvas');
+  
+  canvas.addEventListener('mousedown', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    
+    const dx = x - mapState.icebergX;
+    const dy = y - mapState.icebergY;
+    if (Math.sqrt(dx * dx + dy * dy) < 15) {
+      isDraggingIceberg = true;
+    }
+  });
+  
+  canvas.addEventListener('mousemove', (e) => {
+    if (!isDraggingIceberg) return;
+    
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    
+    const { m, W, H, minLat, maxLat, minLon, maxLon } = mapState;
+    const newLon = minLon + ((x - m) / (W - 2 * m)) * (maxLon - minLon);
+    const newLat = maxLat - ((y - m) / (H - 2 * m)) * (maxLat - minLat);
+    
+    const latDMS = decimalToDMS(Math.max(minLat, Math.min(maxLat, newLat)));
+    const lonDMS = decimalToDMS(Math.max(minLon, Math.min(maxLon, newLon)));
+    
+    document.getElementById('iLatD').value = latDMS.deg;
+    document.getElementById('iLatM').value = latDMS.min;
+    document.getElementById('iLatS').value = latDMS.sec;
+    document.getElementById('iLonD').value = lonDMS.deg;
+    document.getElementById('iLonM').value = lonDMS.min;
+    document.getElementById('iLonS').value = lonDMS.sec;
+    
+    calculate();
+  });
+  
+  canvas.addEventListener('mouseup', () => {
+    isDraggingIceberg = false;
+  });
+  
+  canvas.addEventListener('mouseleave', () => {
+    isDraggingIceberg = false;
+  });
+}
+</script>
+</body>
+</html>
