@@ -1,6 +1,8 @@
 #pragma once
 
 #include "packet.h"
+#include <stdint.h>
+#include <Arduino.h>
 
 #define LOGGER_MAX_PACKETS 600
 

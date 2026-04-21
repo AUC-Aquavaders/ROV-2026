@@ -28,8 +28,8 @@
 
 //TODO: review float main
 #include "PIDController.h"
-#include "motor.h"
-#include "sensor.h"
+#include "MotorModule.h"
+#include "SensorModule.h"
 #include "DataLogger.h"
 #include "ESPnow_Sender.h"
 #include "packet.h"
@@ -40,6 +40,7 @@
 #define DEPTH_TOLERANCE_M 0.05f     // within ±5 cm = "at depth"
 #define HOLD_DURATION_S   30        // seconds to hold each depth
 
+#define SYRINGE_MAX_ML 50.0
 
 // Safety ceiling
 // If float gets shallower than this while in HOLD_SHALLOW, warn.
@@ -117,10 +118,10 @@ void transitionTo(State next) {
   currentState = next;
 }
 
-bool buttonPressed() {
-  // Active low (pulled-up BOOT button)
-  return digitalRead(TRIGGER_BTN_PIN) == LOW;
-}
+// bool buttonPressed() {
+//   // Active low (pulled-up BOOT button)
+//   return digitalRead(TRIGGER_BTN_PIN) == LOW;
+// }
 
 bool atDepth(float current, float target) {
   return fabsf(current - target) <= DEPTH_TOLERANCE_M;
@@ -128,7 +129,9 @@ bool atDepth(float current, float target) {
 
 
 void buildPacket(DataPacket& pkt, float depth, float pressure) {
-  strncpy(pkt.companyID, COMPANY_ID, sizeof(pkt.companyID));
+  // strncpy(pkt.companyID, COMPANY_ID, sizeof(pkt.companyID));
+  strncpy(pkt.companyID, COMPANY_ID, sizeof(pkt.companyID) - 1);
+  pkt.companyID[sizeof(pkt.companyID) - 1] = '\0';
   pkt.timestamp_s  = millis() / 1000;
   pkt.pressure_kPa = pressure;
   pkt.depth_m      = depth;
@@ -148,10 +151,10 @@ void setup() {
   delay(500);
   Serial.println("\n=== PN01 FLOAT - AUC AQUAVADERS ===");
 
-  pinMode(TRIGGER_BTN_PIN, INPUT_PULLUP);
+  // pinMode(TRIGGER_BTN_PIN, INPUT_PULLUP);
 
   sensor.init();
-  motor.init();
+  motor.motorInit();
   sender.init();
 
   Serial.println("[MAIN] Ready. Press button to begin.");
@@ -168,7 +171,7 @@ void loop() {
   lastLoopTime = now;
 
   // Read sensors every cycle
-  float depth    = sensor.getDepth_m();
+  float depth    = sensor.getDepth();
   float pressure = sensor.getPressure_kPa();
 
   // ── State machine ─────────────────────────────────────────
@@ -176,10 +179,8 @@ void loop() {
 
     // ── IDLE: wait for button press ──────────────────────────
     case IDLE:
-      if (buttonPressed()) {
-        sensor.calibrateSurface();
-        transitionTo(PRE_COMM);
-      }
+      sensor.calibrateSurface();
+      transitionTo(PRE_COMM);
       break;
 
     // ── PRE_COMM: send ready beacon to station ───────────────
@@ -197,7 +198,7 @@ void loop() {
     // ── HOMING: zero the syringe ─────────────────────────────
     case HOMING:
       Serial.println("[MAIN] Homing motor...");
-      motor.home();
+      motor.homeMotor();
       pid.reset();
       currentProfile = 1;
       transitionTo(DESCEND_1);
@@ -206,9 +207,9 @@ void loop() {
     // ── DESCEND: PID toward deep target ──────────────────────
     case DESCEND_1:
     case DESCEND_2: {
-      double pidOut = pid.compute(DEEP_TARGET_M, depth, dt);
-      motor.setTargetVolume(pidOut);
-      motor.run();
+      double pidOut = pid.calculateControlSignal(DEEP_TARGET_M, depth, dt);
+      motor.setTargetPosition(pidOut);
+      motor.runMotor();
 
       logIfDue(now, depth, pressure);
 
@@ -222,9 +223,9 @@ void loop() {
     // ── HOLD_DEEP: maintain 2.5 m for 30 s ──────────────────
     case HOLD_DEEP_1:
     case HOLD_DEEP_2: {
-      double pidOut = pid.compute(DEEP_TARGET_M, depth, dt);
-      motor.setTargetVolume(pidOut);
-      motor.run();
+      double pidOut = pid.calculateControlSignal(DEEP_TARGET_M, depth, dt);
+      motor.setTargetPosition(pidOut);
+      motor.runMotor();
 
       logIfDue(now, depth, pressure);
 
@@ -238,9 +239,9 @@ void loop() {
     // ── ASCEND: PID toward shallow target ────────────────────
     case ASCEND_1:
     case ASCEND_2: {
-      double pidOut = pid.compute(SHALLOW_TARGET_M, depth, dt);
-      motor.setTargetVolume(pidOut);
-      motor.run();
+      double pidOut = pid.calculateControlSignal(SHALLOW_TARGET_M, depth, dt);
+      motor.setTargetPosition(pidOut);
+      motor.runMotor();
 
       logIfDue(now, depth, pressure);
 
@@ -259,9 +260,9 @@ void loop() {
     // ── HOLD_SHALLOW: maintain 0.4 m for 30 s ───────────────
     case HOLD_SHALLOW_1:
     case HOLD_SHALLOW_2: {
-      double pidOut = pid.compute(SHALLOW_TARGET_M, depth, dt);
-      motor.setTargetVolume(pidOut);
-      motor.run();
+      double pidOut = pid.calculateControlSignal(SHALLOW_TARGET_M, depth, dt);
+      motor.setTargetPosition(pidOut);
+      motor.runMotor();
 
       logIfDue(now, depth, pressure);
 
@@ -275,7 +276,7 @@ void loop() {
           currentProfile = 2;
           transitionTo(DESCEND_2);        // start profile 2
         } else {
-          motor.setTargetVolume(0);       // push water out, float rises
+          motor.setTargetPosition(0);       // push water out, float rises
           transitionTo(SURFACE_WAIT);
         }
       }
@@ -284,19 +285,15 @@ void loop() {
 
     // ── SURFACE_WAIT: recovered — button to transmit ─────────
     case SURFACE_WAIT:
-      motor.run();   // finish emptying syringe
-      if (buttonPressed()) {
-        Serial.printf("[MAIN] Logged %d packets. Transmitting...\n", logger.count());
-        transitionTo(TRANSMITTING);
-        delay(300);
-      }
+      motor.runMotor();   // finish emptying syringe
+      transitionTo(TRANSMITTING);
       break;
 
     // ── TRANSMITTING: replay log over ESPNow ─────────────────
     case TRANSMITTING:
       logger.replayAll(transmitPacket);
       Serial.println("[MAIN] Transmission complete.");
-      motor.sleep();
+      motor.sleepMotor();
       transitionTo(DONE);
       break;
 
