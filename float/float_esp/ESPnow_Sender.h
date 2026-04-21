@@ -32,10 +32,16 @@ class ESPNowSender {
 public:
   void init();
   void send(const DataPacket& pkt);
+  void resetAcks();
+  bool hasAckFor(uint16_t seq) const;
 
 private:
   Adafruit_ADS1115 ads;
 
   float readPressureKPA();
   static void onSent(const wifi_tx_info_t *info, esp_now_send_status_t status);
+  static void onReceive(const esp_now_recv_info *info, const uint8_t *data, int len);
+
+  static volatile uint16_t _lastAckSeq;
+  static volatile bool _hasAck;
 };

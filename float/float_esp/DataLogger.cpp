@@ -26,3 +26,8 @@ void DataLogger::clear() {
 uint16_t DataLogger::count() const {
   return _count;
 }
+
+const DataPacket& DataLogger::at(uint16_t idx) const {
+  // Caller must bounds-check; keep lightweight for embedded.
+  return _buf[idx];
+}

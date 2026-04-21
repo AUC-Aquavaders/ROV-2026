@@ -13,6 +13,7 @@ public:
   void clear();
 
   uint16_t count() const;
+  const DataPacket& at(uint16_t idx) const;
 
 private:
   DataPacket _buf[LOGGER_MAX_PACKETS];

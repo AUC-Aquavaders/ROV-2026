@@ -1,12 +1,11 @@
 import matplotlib.pyplot as plt
-import datetime
 import argparse
+import csv
 
 # ASSUMPTIONS:
 # depth is in meters not centimeters
 # pressure is in kpa
 # depth is inverted to look like the float's trajectory
-# time is in actual time not seconds (1:51:42)
 # file is .txt
 
 # python grapher.py test_data.txt
@@ -16,34 +15,44 @@ import argparse
 
 def grapher(filename):
     DATA_FILE = filename
-    USE_CLOCK_TIME = True         
 
     time_values = []
     depth_values = []
 
-    with open(DATA_FILE, "r") as file:
-        for line in file:
-            parts = line.strip().split()
+    # Station output format (CSV, one DATA packet per line):
+    # companyID,timestamp_s,profile,state,seq,pressure_kPa,depth_m
+    #
+    # Lines starting with '#' are status (READY/DONE/etc) and are ignored.
+    with open(DATA_FILE, "r", newline="") as file:
+        for raw in file:
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
 
-            if len(parts) < 6:
-                continue  # Skip incomplete lines
-
-            # Example packet:
-            # EX01 00:00:05 9.8 kpa 0.40 m
-
-            time_data = parts[1]
-            depth = float(parts[4])
-
-            #TODO: REVISIT TIME FORMATTING
-            if USE_CLOCK_TIME:
-                # Convert HH:MM:SS to seconds
-                t = datetime.datetime.strptime(time_data, "%H:%M:%S")
-                seconds = t.hour * 3600 + t.minute * 60 + t.second
-                time_values.append(seconds)
+            # Be tolerant of accidental whitespace logs: try CSV first.
+            if "," in line:
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) < 7:
+                    continue
+                try:
+                    t_s = float(parts[1])
+                    depth = float(parts[6])
+                except ValueError:
+                    continue
             else:
-                # Float time already in seconds
-                time_values.append(float(time_data))
+                # Legacy fallback: "PN01 00:00:05 9.8 kPa 0.40 meters"
+                parts = line.split()
+                if len(parts) < 6:
+                    continue
+                try:
+                    # If time is HH:MM:SS, convert to seconds
+                    hh, mm, ss = parts[1].split(":")
+                    t_s = int(hh) * 3600 + int(mm) * 60 + int(ss)
+                    depth = float(parts[4])
+                except Exception:
+                    continue
 
+            time_values.append(t_s)
             depth_values.append(depth)
 
     plt.figure()

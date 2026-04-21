@@ -3,6 +3,9 @@
 // MAC address
 uint8_t receiverMAC[] = {0x80, 0xF3, 0xDA, 0x5D, 0xBA, 0x44};
 
+volatile uint16_t ESPNowSender::_lastAckSeq = 0;
+volatile bool ESPNowSender::_hasAck = false;
+
 void ESPNowSender::init() {
   Serial.println("[ESP-NOW] Init...");
 
@@ -23,6 +26,7 @@ void ESPNowSender::init() {
   }
 
   esp_now_register_send_cb(onSent);
+  esp_now_register_recv_cb(onReceive);
 
   esp_now_peer_info_t peerInfo = {};
   memcpy(peerInfo.peer_addr, receiverMAC, 6);
@@ -40,13 +44,19 @@ void ESPNowSender::init() {
 void ESPNowSender::send(const DataPacket& pkt) {
   esp_now_send(receiverMAC, (uint8_t *)&pkt, sizeof(pkt));
 
-  uint32_t h = pkt.timestamp_s / 3600;
-  uint32_t m = (pkt.timestamp_s % 3600) / 60;
-  uint32_t s = pkt.timestamp_s % 60;
+  Serial.printf("[TX] type=%u seq=%u t=%lus p=%.2fkPa d=%.3fm prof=%u state=%u\n",
+                (unsigned)pkt.msgType, (unsigned)pkt.seq,
+                (unsigned long)pkt.timestamp_s,
+                pkt.pressure_kPa, pkt.depth_m,
+                (unsigned)pkt.profileNum, (unsigned)pkt.state);
+}
 
-  Serial.printf("Sending: %s %02lu:%02lu:%02lu %.2f kPa %.2f m\n",
-                pkt.companyID, h, m, s,
-                pkt.pressure_kPa, pkt.depth_m);
+void ESPNowSender::resetAcks() {
+  _hasAck = false;
+}
+
+bool ESPNowSender::hasAckFor(uint16_t seq) const {
+  return _hasAck && _lastAckSeq == seq;
 }
 
 float ESPNowSender::readPressureKPA() {
@@ -68,4 +78,15 @@ float ESPNowSender::readPressureKPA() {
 void ESPNowSender::onSent(const wifi_tx_info_t *info, esp_now_send_status_t status) {
   Serial.print("Send Status: ");
   Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Success" : "Failed");
+}
+
+void ESPNowSender::onReceive(const esp_now_recv_info *info, const uint8_t *data, int len) {
+  if (len != sizeof(DataPacket)) return;
+
+  DataPacket pkt;
+  memcpy(&pkt, data, sizeof(pkt));
+  if (pkt.msgType != PKT_ACK) return;
+
+  _lastAckSeq = pkt.seq;
+  _hasAck = true;
 }

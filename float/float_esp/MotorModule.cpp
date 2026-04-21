@@ -81,3 +81,11 @@ void MotorModule::checkLimits() {
   if (targetPosition > MAX_STEPS) targetPosition = MAX_STEPS;
   if (targetPosition < 0) targetPosition = 0;
 }                        
+
+long MotorModule::volumeToSteps(double volume) {
+  // Clamp to physical syringe volume range.
+  if (volume < 0) volume = 0;
+  double maxMl = (double)MAX_STEPS / (double)STEPS_PER_ML;
+  if (volume > maxMl) volume = maxMl;
+  return (long)(volume * (double)STEPS_PER_ML);
+}

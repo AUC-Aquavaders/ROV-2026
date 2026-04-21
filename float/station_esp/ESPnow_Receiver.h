@@ -14,3 +14,7 @@ extern DataPacket packet;
 //Function Declarations
 void onReceive(const esp_now_recv_info *info, const uint8_t *data, int len);
 void receiverSetup();
+
+// Send ACK back to the float
+bool ensurePeer(const uint8_t mac[6]);
+void sendAck(const uint8_t mac[6], uint16_t seqToAck);
