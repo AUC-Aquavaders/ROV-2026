@@ -1,45 +1,58 @@
 #include "SensorModule.h"
 
-//TODO: REVIEW SENSOR CODE
 void SensorModule::init() {
-  Wire.begin(ADS_SDA_PIN, ADS_SCL_PIN);
-  _ads.setGain(GAIN_ONE);   // ±4.096 V range
-  if (!_ads.begin()) {
-    Serial.println("[SENSOR] ADS1115 not found — check wiring!");
+  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+
+  // MS5837 startup can take a moment after power-up
+  delay(10);
+
+  _ok = _sensor.begin(Wire);
+  if (!_ok) {
+    Serial.println("[SENSOR] MS5837 init failed — check wiring/address!");
+    return;
   }
+
+  // Default is 30BA; set explicitly for clarity.
+  _sensor.setModel(MS5837::MS5837_30BA);
+  _sensor.setFluidDensity(WATER_DENSITY);
+
+  // Prime first read so later calls have data immediately.
+  _sensor.read();
 }
 
 void SensorModule::calibrateSurface() {
-  // Average 10 readings to reduce noise
+  if (!_ok) return;
+
+  // Average a few readings to reduce noise
   float sum = 0;
-  for (int i = 0; i < 10; i++) {
-    int16_t raw = _ads.readADC_SingleEnded(0);
-    sum += rawToKPa(raw);
-    delay(20);
+  const int samples = 8;
+  for (int i = 0; i < samples; i++) {
+    _sensor.read();
+    // library returns mbar
+    float mbar = _sensor.pressure();
+    float kPa = mbar * 0.1f;
+    sum += kPa;
+    delay(15);
   }
-  _surfacePressure_kPa = sum / 10.0f;
+  _surfacePressure_kPa = sum / (float)samples;
   Serial.printf("[SENSOR] Surface calibrated: %.2f kPa\n", _surfacePressure_kPa);
 }
 
 float SensorModule::getPressure_kPa() {
-  int16_t raw = _ads.readADC_SingleEnded(0);
-  return rawToKPa(raw);
+  if (!_ok) return 0.0f;
+  _sensor.read();
+  // MS5837 pressure() returns mbar by default
+  return _sensor.pressure() * 0.1f; // kPa
 }
 
 float SensorModule::getDepth() {
-  float pressure = getPressure_kPa();
-  float gauge_kPa = pressure - _surfacePressure_kPa;
-  if (gauge_kPa < 0) gauge_kPa = 0;
-  // depth = gauge_pressure / (rho * g)
-  // kPa → Pa: × 1000
-  return (gauge_kPa * 1000.0f) / (WATER_DENSITY * GRAVITY);
-}
+  if (!_ok) return 0.0f;
 
-float SensorModule::rawToKPa(int16_t raw) {
-  // ADS1115 at GAIN_ONE: 1 bit = 0.125 mV
-  float voltage = raw * 0.125f / 1000.0f;  // volts
-  // SEN0257: 0.5 V = 0 kPa, 4.5 V = SENSOR_MAX_KPA
-  float kPa = (voltage - 0.5f) / 4.0f * SENSOR_MAX_KPA;
-  if (kPa < 0) kPa = 0;
-  return kPa;
+  // Use gauge-pressure conversion so depth is zeroed by calibrateSurface().
+  float pressure_kPa = getPressure_kPa();
+  float gauge_kPa = pressure_kPa - _surfacePressure_kPa;
+  if (gauge_kPa < 0) gauge_kPa = 0;
+
+  // depth = gauge_pressure(Pa) / (rho * g)
+  return (gauge_kPa * 1000.0f) / (WATER_DENSITY * GRAVITY);
 }

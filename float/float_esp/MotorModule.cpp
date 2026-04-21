@@ -12,6 +12,7 @@ void MotorModule::motorInit() {
   driver.setRunCurrent(RUN_CURRENT);
   driver.setHoldCurrent(HOLD_CURRENT);
 
+
   driver.enableCoolStep();
   driver.enableAutomaticCurrentScaling();
   driver.enable();

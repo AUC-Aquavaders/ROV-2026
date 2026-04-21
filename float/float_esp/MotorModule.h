@@ -2,10 +2,13 @@
 #include <TMC2209.h>
 
 // TODO: FIX THE PIN NUMBERS
-#define STEP_PIN 1
-#define DIR_PIN 2
-#define RX_PIN 3
-#define TX_PIN 4
+#define STEP_PIN 25
+#define DIR_PIN 26
+#define RX_PIN 16
+#define TX_PIN 17
+
+#define MS1_PIN 32 // motor step
+#define MS2_PIN 33
 
 #define BAUD_RATE 115200 // TODO: review baud rate
 #define RUN_CURRENT 80 // TODO: review run current
