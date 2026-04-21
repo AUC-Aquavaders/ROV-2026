@@ -1,4 +1,19 @@
+#pragma once
 #include <TMC2209.h> 
+
+// TODO: FIX THE PIN NUMBERS
+#define STEP_PIN 1
+#define DIR_PIN 2
+#define RX_PIN 3
+#define TX_PIN
+
+#define BAUD_RATE 115200 // TODO: review baud rate
+#define RUN_CURRENT 80 // TODO: review run current
+#define HOLD_CURRENT 40 // TODO: review hold current
+#define STALL_SENSITIVITY 5 // TODO: review stall sensitivity
+
+#define STEPS_PER_ML 200 // TODO: REVIEW STEPS PER ML
+
 
 class MotorModule {
 
