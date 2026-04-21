@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h> 
+// IF U CHANGE ANYTHING HERE CHANGE PACKET.H ON OTHER SIDE
 
 #define COMPANY_ID "PN01"  
 // TODO: review packet structure
