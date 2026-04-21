@@ -9,7 +9,6 @@
 #define WATER_DENSITY   997.0f    // kg/m^3 freshwater (use 1025.0 for seawater)
 #define GRAVITY         9.80665f
 
-// I2C pins (ESP32 defaults are often 21/22)
 #define I2C_SDA_PIN  21
 #define I2C_SCL_PIN  22
 
