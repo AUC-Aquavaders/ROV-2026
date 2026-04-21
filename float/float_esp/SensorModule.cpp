@@ -8,7 +8,6 @@ void SensorModule::init() {
 
   _ok = _sensor.begin(Wire);
   if (!_ok) {
-    Serial.println("[SENSOR] MS5837 init failed — check wiring/address!");
     return;
   }
 
@@ -35,7 +34,6 @@ void SensorModule::calibrateSurface() {
     delay(15);
   }
   _surfacePressure_kPa = sum / (float)samples;
-  Serial.printf("[SENSOR] Surface calibrated: %.2f kPa\n", _surfacePressure_kPa);
 }
 
 float SensorModule::getPressure_kPa() {

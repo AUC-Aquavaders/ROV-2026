@@ -3,8 +3,6 @@
 
 #include <WiFi.h>
 #include <esp_now.h>
-#include <Wire.h>
-#include <Adafruit_ADS1X15.h>
 #include "packet.h"
 #include <Arduino.h>
 
@@ -15,19 +13,6 @@ extern uint8_t receiverMAC[6];
 
 // extern DataPacket packet;
 
-//Sensor Config
-#define SENSOR_MAX_KPA  1600.0f  // SEN0257 rated 0–1.6 MPa
-#define WATER_DENSITY   1000.0f  // kg/m³ — use 1025.0 for saltwater
-#define GRAVITY         9.81f
-
-// extern Adafruit_ADS1115 ads;
-
-// //Function Declarations
-// float readPressureKPA();
-// void  onSent(const wifi_tx_info_t *info, esp_now_send_status_t status);
-// void  senderSetup();
-// void  senderLoop();
-
 class ESPNowSender {
 public:
   void init();
@@ -36,9 +21,6 @@ public:
   bool hasAckFor(uint16_t seq) const;
 
 private:
-  Adafruit_ADS1115 ads;
-
-  float readPressureKPA();
   static void onSent(const wifi_tx_info_t *info, esp_now_send_status_t status);
   static void onReceive(const esp_now_recv_info *info, const uint8_t *data, int len);
 

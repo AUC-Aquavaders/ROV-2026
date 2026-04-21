@@ -6,7 +6,6 @@
 
 void DataLogger::log(const DataPacket& pkt) {
   if (_count >= LOGGER_MAX_PACKETS) {
-    Serial.println("[LOGGER] Buffer full — packet dropped!");
     return;
   }
   _buf[_count++] = pkt;

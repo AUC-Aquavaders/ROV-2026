@@ -142,7 +142,6 @@ const char* stateName(State s) {
 }
 
 void transitionTo(State next) {
-  Serial.printf("[STATE] %s → %s\n", stateName(currentState), stateName(next));
   currentState = next;
 
   // Reset per-state timers where appropriate
@@ -200,15 +199,12 @@ void transmitPacket(const DataPacket& pkt) {
 void setup() {
   Serial.begin(115200);
   delay(500);
-  Serial.println("\n=== PN01 FLOAT - AUC AQUAVADERS ===");
 
   // pinMode(TRIGGER_BTN_PIN, INPUT_PULLUP);
 
   sensor.init();
   motor.motorInit();
   sender.init();
-
-  Serial.println("[MAIN] Auto-start enabled. Waiting for station ACK before diving...");
 }
 
 
@@ -256,7 +252,6 @@ void loop() {
       }
 
       if (awaitingAck && sender.hasAckFor(awaitingAckSeq)) {
-        Serial.println("[MAIN] Station ACK received. Proceeding to HOMING.");
         awaitingAck = false;
         transitionTo(HOMING);
       }
@@ -265,7 +260,6 @@ void loop() {
 
     // ── HOMING: zero the syringe ─────────────────────────────
     case HOMING:
-      Serial.println("[MAIN] Homing motor...");
       motor.homeMotor();
       pid.reset();
       currentProfile = 1;
@@ -319,7 +313,6 @@ void loop() {
 
       // Safety: warn if approaching surface
       if (depth < SURFACE_PENALTY_DEPTH_M) {
-        Serial.println("[WARN] Near surface! Check buoyancy.");
       }
 
       if (atDepth(depth, SHALLOW_TARGET_M)) {
@@ -340,7 +333,6 @@ void loop() {
       logIfDue(now, depth, pressure);
 
       if (depth < SURFACE_PENALTY_DEPTH_M) {
-        Serial.println("[WARN] Near surface!");
       }
 
       markHoldProgress(now, atDepth(depth, SHALLOW_TARGET_M));
@@ -393,12 +385,10 @@ void loop() {
           txRetries = 0;
           lastTxAttemptMs = now;
         } else if (sender.hasAckFor(awaitingAckSeq)) {
-          Serial.println("[MAIN] Transmission complete (DONE ACKed).");
           motor.sleepMotor();
           transitionTo(DONE);
         } else if (now - lastTxAttemptMs >= ACK_TIMEOUT_MS) {
           if (txRetries++ >= ACK_MAX_RETRIES) {
-            Serial.println("[MAIN] DONE not ACKed; giving up.");
             motor.sleepMotor();
             transitionTo(DONE);
           } else {
@@ -431,7 +421,6 @@ void loop() {
           txIndex++;
         } else if (now - lastTxAttemptMs >= ACK_TIMEOUT_MS) {
           if (txRetries++ >= ACK_MAX_RETRIES) {
-            Serial.println("[MAIN] Packet not ACKed; skipping.");
             awaitingAck = false;
             txIndex++;
           } else {
@@ -460,9 +449,4 @@ void logIfDue(uint32_t now, float depth, float pressure) {
   DataPacket pkt;
   buildPacket(pkt, depth, pressure);
   logger.log(pkt);
-
-  // Also print live to serial so you can monitor during testing
-  Serial.printf("[LOG] %s t=%lus  p=%.2fkPa  d=%.3fm  state=%s\n",
-    pkt.companyID, (unsigned long)pkt.timestamp_s,
-    pkt.pressure_kPa, pkt.depth_m, stateName(currentState));
 }
