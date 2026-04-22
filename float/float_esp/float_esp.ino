@@ -1,32 +1,3 @@
-// MAIN ENTRY POINT FOR FLOAT
-
-// STATE MACHINE:
-//   IDLE
-//     └─(button press)→ PRE_COMM       send "ready" beacon
-//   PRE_COMM
-//     └─(sent)→ HOMING                 zero syringe position
-//   HOMING
-//     └─(homed)→ DESCEND_1
-//
-//   ── Profile 1 ──────────────────────────────────────────────
-//   DESCEND_1   PID drives to DEEP_TARGET_M
-//     └─(depth reached)→ HOLD_DEEP_1
-//   HOLD_DEEP_1  maintain 2.5 m for HOLD_DURATION_S seconds
-//     └─(timer done)→ ASCEND_1
-//   ASCEND_1    PID drives to SHALLOW_TARGET_M
-//     └─(depth reached)→ HOLD_SHALLOW_1
-//   HOLD_SHALLOW_1  maintain 0.4 m for HOLD_DURATION_S seconds
-//     └─(timer done)→ DESCEND_2
-//
-//   ── Profile 2 ──────────────────────────────────────────────
-//   DESCEND_2 … HOLD_SHALLOW_2  (same structure)
-//
-//   SURFACE_WAIT  float is recovered, press button to transmit
-//   TRANSMITTING  replay log over ESPNow, one packet at a time
-//   DONE
-
-
-//TODO: review float main
 #include "PIDController.h"
 #include "MotorModule.h"
 #include "SensorModule.h"
@@ -35,39 +6,22 @@
 #include "packet.h"
 #include <math.h>
 
-// Dive profile parameters (meters)
-#define DEEP_TARGET_M     2.5f
-#define SHALLOW_TARGET_M  0.40f
-#define DEPTH_TOLERANCE_M 0.05f     // within ±5 cm = "at depth"
-#define HOLD_DURATION_S   30        // seconds to hold each depth
+#define DEEP_DEPTH 2.5f //2.5 meters
+#define SHALLOW_DEPTH 0.40f // 40 cm
+#define DEPTH_MARGIN 0.33f // +- 33cm
+#define TARGET_HOLD_TIME 30 // 30 seconds
 
-#define SYRINGE_MAX_ML 50.0
-
-// Safety ceiling
-// If float gets shallower than this while in HOLD_SHALLOW, warn.
-#define SURFACE_PENALTY_DEPTH_M  0.05f
+#define LOOP_MS 100 // 10 Hz
 
 
-// PID Parameters
 // TODO: TUNE THESE during pool testing!
 #define PID_KP  8.0
 #define PID_KI  0.3
 #define PID_KD  0.8
 
-// Loop timing
-#define LOOP_INTERVAL_MS  100 // 10 Hz control loop
-
-// Comms reliability
-#define READY_BEACON_INTERVAL_MS 1000
-#define ACK_TIMEOUT_MS           200
-#define ACK_MAX_RETRIES          8
-
-// Surface detection for autonomous transmit after recovery
-#define SURFACE_DETECT_DEPTH_M   0.15f
-#define SURFACE_STABLE_MS        10000
+#define SYRINGE_MAX_ML 50.0
 
 
-// Objects
 PIDController pid(PID_KP, PID_KI, PID_KD, 0.0, SYRINGE_MAX_ML);
 MotorModule motor;
 SensorModule sensor;
@@ -76,377 +30,202 @@ ESPNowSender sender;
 
 // State machine 
 enum State : uint8_t {
-  IDLE            = 0,
-  PRE_COMM        = 1,
-  HOMING          = 2,
-  DESCEND_1       = 3,
-  HOLD_DEEP_1     = 4,
-  ASCEND_1        = 5,
-  HOLD_SHALLOW_1  = 6,
-  DESCEND_2       = 7,
-  HOLD_DEEP_2     = 8,
-  ASCEND_2        = 9,
-  HOLD_SHALLOW_2  = 10,
-  SURFACE_WAIT    = 11,
-  TRANSMITTING    = 12,
-  DONE            = 13
+  WAITING = 0,
+  DIVING = 1, // going deep
+  HOLDING = 2, // hold at current position
+  RECOVER = 3, 
+  TRANSMIT = 4, // transmit to station
+  DONE = 5
 };
 
+uint8_t nextTask = 0; // deep1 = 0, shallow1 = 1, deep2 = 2, shallow2 = 3, recover = 4
+State currentState = WAITING;
+State nextState = WAITING;
 
-State currentState  = IDLE;
-uint32_t holdStartTime = 0;
-uint32_t lastLoopTime  = 0;
-uint32_t lastLogTime   = 0;
+bool ack = false; // ack from station to start profiling
+float currentDepth = 0;
+float currentPressure = 0;
+float holdTime = 0;
 
-uint8_t currentProfile = 0;   // 1 or 2, set when profile starts
-
-// Hold tracking (continuous-in-tolerance)
-uint32_t holdAccumMs = 0;
+uint32_t holdCounter = 0;
 uint32_t lastHoldUpdateMs = 0;
 
-// Comms tracking
-uint16_t nextSeq = 1;
-uint32_t lastReadyBeaconMs = 0;
-uint32_t lastTxAttemptMs = 0;
-uint8_t  txRetries = 0;
-uint16_t awaitingAckSeq = 0;
-bool     awaitingAck = false;
+// loop throttle
+uint32_t lastLoopMs = 0;
+uint32_t lastLogMs = 0;
 
-// Transmission replay
-uint16_t txIndex = 0;
+uint16_t txIndex = 0; //transmission index to keep track of packets when transmitting
 
-// Surface stable tracking
-uint32_t surfaceStableStartMs = 0;
+uint32_t lastBeaconMs = 0;
+uint16_t nextSequence = 1;
 
-
-// Helpers
-
-const char* stateName(State s) {
-  switch(s) {
-    case IDLE:           return "IDLE";
-    case PRE_COMM:       return "PRE_COMM";
-    case HOMING:         return "HOMING";
-    case DESCEND_1:      return "DESCEND_1";
-    case HOLD_DEEP_1:    return "HOLD_DEEP_1";
-    case ASCEND_1:       return "ASCEND_1";
-    case HOLD_SHALLOW_1: return "HOLD_SHALLOW_1";
-    case DESCEND_2:      return "DESCEND_2";
-    case HOLD_DEEP_2:    return "HOLD_DEEP_2";
-    case ASCEND_2:       return "ASCEND_2";
-    case HOLD_SHALLOW_2: return "HOLD_SHALLOW_2";
-    case SURFACE_WAIT:   return "SURFACE_WAIT";
-    case TRANSMITTING:   return "TRANSMITTING";
-    case DONE:           return "DONE";
-    default:             return "UNKNOWN";
-  }
+float targetDepth() {
+  if (nextTask == 0 || nextTask == 2) return DEEP_DEPTH;
+  return SHALLOW_DEPTH;
 }
 
-void transitionTo(State next) {
-  currentState = next;
-
-  // Reset per-state timers where appropriate
-  if (next == HOLD_DEEP_1 || next == HOLD_DEEP_2 || next == HOLD_SHALLOW_1 || next == HOLD_SHALLOW_2) {
-    holdAccumMs = 0;
-    lastHoldUpdateMs = millis();
-  }
+bool atDepth(float target) {
+  return fabsf(currentDepth - target) <= DEPTH_MARGIN;
 }
 
-// bool buttonPressed() {
-//   // Active low (pulled-up BOOT button)
-//   return digitalRead(TRIGGER_BTN_PIN) == LOW;
-// }
-
-bool atDepth(float current, float target) {
-  return fabsf(current - target) <= DEPTH_TOLERANCE_M;
-}
-
-void markHoldProgress(uint32_t now, bool inTolerance) {
-  if (lastHoldUpdateMs == 0) lastHoldUpdateMs = now;
-  uint32_t dtMs = now - lastHoldUpdateMs;
+// called every loop while in HOLD state
+bool holdComplete(uint32_t now) {
+  float target = targetDepth();
+  uint32_t dt  = now - lastHoldUpdateMs;
   lastHoldUpdateMs = now;
 
-  if (!inTolerance) {
-    holdAccumMs = 0;
-    return;
+  if (!atDepth(target)) {
+    holdCounter = 0;   // TODO: if drifts out, should we reset holdd or what?
+    return false;
   }
 
-  // Accumulate continuous time in tolerance
-  if (holdAccumMs < 0xFFFFFFF0u) holdAccumMs += dtMs;
+  holdCounter += dt;
+  return holdCounter >= (uint32_t)TARGET_HOLD_TIME * 1000;
 }
 
 
-void buildPacket(DataPacket& pkt, float depth, float pressure) {
-  // strncpy(pkt.companyID, COMPANY_ID, sizeof(pkt.companyID));
+void runPID(float target, float dt) {
+  double pidOut = pid.calculateControlSignal(target, currentDepth, dt);
+  long targetSteps = motor.volumeToSteps(pidOut);
+  motor.setTargetPosition(targetSteps);
+  motor.runMotor();
+}
+
+// log info in buffer
+void logIfDue(uint32_t now) {
+  if (now - lastLogMs < 1000) return;
+  lastLogMs = now;
+
+  DataPacket pkt;
   strncpy(pkt.companyID, COMPANY_ID, sizeof(pkt.companyID) - 1);
   pkt.companyID[sizeof(pkt.companyID) - 1] = '\0';
-  pkt.msgType      = PKT_DATA;
-  pkt.reserved0    = 0;
-  pkt.seq          = 0;
-  pkt.timestamp_s  = millis() / 1000;
-  pkt.pressure_kPa = pressure;
-  pkt.depth_m      = depth;
-  pkt.profileNum   = currentProfile;
-  pkt.state        = (uint8_t)currentState;
+  pkt.timestamp_s  = now / 1000;
+  pkt.pressure_kPa = currentPressure;
+  pkt.depth_m = currentDepth;
+  pkt.profileNum = (nextTask >= 2) ? 2 : 1;
+  pkt.state = (uint8_t)currentState;
+  logger.log(pkt);
 }
 
-// Callback used by logger.replayAll()
-void transmitPacket(const DataPacket& pkt) {
+// transmit to station
+void transmitCallback(const DataPacket& pkt) {
   sender.send(pkt);
 }
 
-//TODO: REPLACE SERIAL PRINTS
-// Setup
+
 void setup() {
   Serial.begin(115200);
-  delay(500);
-
-  // pinMode(TRIGGER_BTN_PIN, INPUT_PULLUP);
-
   sensor.init();
+
   motor.motorInit();
   sender.init();
 }
 
-
-// MAIN LOOP ///////////////////////////////////////
 void loop() {
   uint32_t now = millis();
+  if (now - lastLoopMs < LOOP_MS) return;
+  float dt = (now - lastLoopMs) / 1000.0f;
+  lastLoopMs = now;
 
-  // Throttle to LOOP_INTERVAL_MS
-  if (now - lastLoopTime < LOOP_INTERVAL_MS) return;
-  float dt = (now - lastLoopTime) / 1000.0f;
-  lastLoopTime = now;
+  currentDepth = sensor.getDepth();
+  currentPressure = sensor.getPressure_kPa();
 
-  // Read sensors every cycle
-  float depth    = sensor.getDepth();
-  float pressure = sensor.getPressure_kPa();
+  switch(currentState) {
 
-  // ── State machine ─────────────────────────────────────────
-  switch (currentState) {
+    case WAITING: {
+      // stay here while ack is false, transition to Deep when ack = true
+      if (now - lastBeaconMs >= 1000) {
+        lastBeaconMs = now;
 
-    // ── IDLE: wait for button press ──────────────────────────
-    case IDLE:
-      // on power-up, calibrate surface and begin handshake.
-      sensor.calibrateSurface();
-      sender.resetAcks();
-      lastReadyBeaconMs = 0;
-      awaitingAck = false;
-      transitionTo(PRE_COMM);
-      break;
-
-    // ── PRE_COMM: send ready beacon to station ───────────────
-    case PRE_COMM: {
-      // Keep broadcasting READY until station ACKs, then proceed.
-      if (now - lastReadyBeaconMs >= READY_BEACON_INTERVAL_MS) {
-        lastReadyBeaconMs = now;
-
-        DataPacket pkt;
-        buildPacket(pkt, depth, pressure);
+        DataPacket pkt = {};
+        strncpy(pkt.companyID, COMPANY_ID, sizeof(pkt.companyID) - 1);
+        pkt.companyID[sizeof(pkt.companyID) - 1] = '\0';
         pkt.msgType = PKT_READY;
+        pkt.seq = nextSequence;
+        pkt.depth_m = currentDepth;
+        pkt.pressure_kPa = currentPressure;
         pkt.profileNum = 0;
-        pkt.seq = nextSeq++;
         sender.send(pkt);
-
-        awaitingAck = true;
-        awaitingAckSeq = pkt.seq;
       }
 
-      if (awaitingAck && sender.hasAckFor(awaitingAckSeq)) {
-        awaitingAck = false;
-        transitionTo(HOMING);
-      }
-      break;
-    }
-
-    // ── HOMING: zero the syringe ─────────────────────────────
-    case HOMING:
-      motor.homeMotor();
-      pid.reset();
-      currentProfile = 1;
-      transitionTo(DESCEND_1);
-      break;
-
-    // ── DESCEND: PID toward deep target ──────────────────────
-    case DESCEND_1:
-    case DESCEND_2: {
-      double pidOut = pid.calculateControlSignal(DEEP_TARGET_M, depth, dt);
-      long targetSteps = motor.volumeToSteps(pidOut); // PID output is mL
-      motor.setTargetPosition(targetSteps);
-      motor.runMotor();
-
-      logIfDue(now, depth, pressure);
-
-      if (atDepth(depth, DEEP_TARGET_M)) {
-        holdStartTime = now;
-        transitionTo(currentState == DESCEND_1 ? HOLD_DEEP_1 : HOLD_DEEP_2);
-      }
-      break;
-    }
-
-    // ── HOLD_DEEP: maintain 2.5 m for 30 s ──────────────────
-    case HOLD_DEEP_1:
-    case HOLD_DEEP_2: {
-      double pidOut = pid.calculateControlSignal(DEEP_TARGET_M, depth, dt);
-      long targetSteps = motor.volumeToSteps(pidOut);
-      motor.setTargetPosition(targetSteps);
-      motor.runMotor();
-
-      logIfDue(now, depth, pressure);
-
-      markHoldProgress(now, atDepth(depth, DEEP_TARGET_M));
-      if (holdAccumMs >= (uint32_t)HOLD_DURATION_S * 1000) {
+      if (sender.hasAckFor(nextSequence)) {
+        nextSequence++;
+        sensor.calibrateSurface();
+        motor.homeMotor();
         pid.reset();
-        transitionTo(currentState == HOLD_DEEP_1 ? ASCEND_1 : ASCEND_2);
+        nextState = DIVING;
       }
+
+      break;
+        
+    }
+
+    case DIVING: {
+      runPID(targetDepth(), dt);
+      logIfDue(now);
+
+      if (atDepth(targetDepth())) {
+        holdCounter = 0;
+        lastHoldUpdateMs = now;
+        currentState = HOLDING;
+      }
+
       break;
     }
 
-    // ── ASCEND: PID toward shallow target ────────────────────
-    case ASCEND_1:
-    case ASCEND_2: {
-      double pidOut = pid.calculateControlSignal(SHALLOW_TARGET_M, depth, dt);
-      long targetSteps = motor.volumeToSteps(pidOut);
-      motor.setTargetPosition(targetSteps);
-      motor.runMotor();
+      case HOLDING: {
+        runPID(targetDepth(), dt);
+        logIfDue(now);
 
-      logIfDue(now, depth, pressure);
-
-      // Safety: warn if approaching surface
-      if (depth < SURFACE_PENALTY_DEPTH_M) {
-      }
-
-      if (atDepth(depth, SHALLOW_TARGET_M)) {
-        holdStartTime = now;
-        transitionTo(currentState == ASCEND_1 ? HOLD_SHALLOW_1 : HOLD_SHALLOW_2);
-      }
-      break;
-    }
-
-    // ── HOLD_SHALLOW: maintain 0.4 m for 30 s ───────────────
-    case HOLD_SHALLOW_1:
-    case HOLD_SHALLOW_2: {
-      double pidOut = pid.calculateControlSignal(SHALLOW_TARGET_M, depth, dt);
-      long targetSteps = motor.volumeToSteps(pidOut);
-      motor.setTargetPosition(targetSteps);
-      motor.runMotor();
-
-      logIfDue(now, depth, pressure);
-
-      if (depth < SURFACE_PENALTY_DEPTH_M) {
-      }
-
-      markHoldProgress(now, atDepth(depth, SHALLOW_TARGET_M));
-      if (holdAccumMs >= (uint32_t)HOLD_DURATION_S * 1000) {
+        if (holdComplete(now)) {
+        nextTask++; 
         pid.reset();
-        if (currentState == HOLD_SHALLOW_1) {
-          currentProfile = 2;
-          transitionTo(DESCEND_2);        // start profile 2
-        } else {
-          motor.setTargetPosition(0);       // push water out, float rises
-          transitionTo(SURFACE_WAIT);
-        }
-      }
-      break;
-    }
 
-    // ── SURFACE_WAIT: recovered — button to transmit ─────────
-    case SURFACE_WAIT:
-      motor.runMotor();   // finish emptying syringe
-      // No button: once we are near-surface and stable, start transmitting.
-      if (depth <= SURFACE_DETECT_DEPTH_M) {
-        if (surfaceStableStartMs == 0) surfaceStableStartMs = now;
-        if (now - surfaceStableStartMs >= SURFACE_STABLE_MS) {
-          txIndex = 0;
-          awaitingAck = false;
-          txRetries = 0;
-          lastTxAttemptMs = 0;
-          sender.resetAcks();
-          transitionTo(TRANSMITTING);
-        }
-      } else {
-        surfaceStableStartMs = 0;
-      }
-      break;
-
-    // ── TRANSMITTING: replay log over ESPNow ─────────────────
-    case TRANSMITTING:
-      // Reliable stop-and-wait replay with ACK+retry.
-      if (txIndex >= logger.count()) {
-        // Send DONE marker once, with best-effort retry.
-        if (!awaitingAck) {
-          DataPacket donePkt;
-          buildPacket(donePkt, depth, pressure);
-          donePkt.msgType = PKT_DONE;
-          donePkt.profileNum = 0;
-          donePkt.seq = nextSeq++;
-          sender.send(donePkt);
-          awaitingAck = true;
-          awaitingAckSeq = donePkt.seq;
-          txRetries = 0;
-          lastTxAttemptMs = now;
-        } else if (sender.hasAckFor(awaitingAckSeq)) {
-          motor.sleepMotor();
-          transitionTo(DONE);
-        } else if (now - lastTxAttemptMs >= ACK_TIMEOUT_MS) {
-          if (txRetries++ >= ACK_MAX_RETRIES) {
-            motor.sleepMotor();
-            transitionTo(DONE);
-          } else {
-            // Re-send DONE by reusing awaitingAckSeq as reference; create a fresh DONE with same seq
-            DataPacket donePkt;
-            buildPacket(donePkt, depth, pressure);
-            donePkt.msgType = PKT_DONE;
-            donePkt.profileNum = 0;
-            donePkt.seq = awaitingAckSeq;
-            sender.send(donePkt);
-            lastTxAttemptMs = now;
+          if (nextTask >= 4) {
+            motor.setTargetPosition(0); //zero syringe to go back up
+            currentState = RECOVER;
           }
+
+          else {
+            currentState = DIVING;
+          }
+
         }
         break;
       }
 
-      if (!awaitingAck) {
-        DataPacket pkt = logger.at(txIndex);
-        pkt.msgType = PKT_DATA;
-        pkt.seq = nextSeq++;
-        sender.send(pkt);
+      case RECOVER: { //recvoer to surface depth
+        motor.runMotor();
 
-        awaitingAck = true;
-        awaitingAckSeq = pkt.seq;
-        txRetries = 0;
-        lastTxAttemptMs = now;
-      } else {
-        if (sender.hasAckFor(awaitingAckSeq)) {
-          awaitingAck = false;
-          txIndex++;
-        } else if (now - lastTxAttemptMs >= ACK_TIMEOUT_MS) {
-          if (txRetries++ >= ACK_MAX_RETRIES) {
-            awaitingAck = false;
-            txIndex++;
-          } else {
-            DataPacket pkt = logger.at(txIndex);
-            pkt.msgType = PKT_DATA;
-            pkt.seq = awaitingAckSeq; // keep seq constant across retries
-            sender.send(pkt);
-            lastTxAttemptMs = now;
-          }
+        if (motor.isAtTarget()) {
+          txIndex = 0;
+          currentState = TRANSMIT;
         }
+
+        break;
+
       }
-      break;
 
-    case DONE:
-      // Nothing left to do.
-      break;
-  }
+      case TRANSMIT: { // transmit to station esp using espnow
+        if (txIndex < logger.count()) {
+          sender.send(logger.at(txIndex));
+          txIndex++;
+          delay(10); // small gap between packets
+        } 
+        
+        else {
+          motor.sleepMotor();
+          currentState = DONE;
+        }
+
+        break;
+      }
+
+      case DONE:
+        break;
+
+    }
+
+  currentState = nextState;
 }
 
-
-//  Log one packet per second
-void logIfDue(uint32_t now, float depth, float pressure) {
-  if (now - lastLogTime < 1000) return;
-  lastLogTime = now;
-
-  DataPacket pkt;
-  buildPacket(pkt, depth, pressure);
-  logger.log(pkt);
-}
