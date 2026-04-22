@@ -277,7 +277,12 @@ class PipeLengthMeasurement:
         if z1 <= 0 or z2 <= 0:
             return {'invalid': True}
 
-        distance = self._calculate_distance_meters(x1, y1, z1, x2, y2, z2)
+        x1_mm = (x1 - self.cx) * z1 / self.fx
+        y1_mm = (y1 - self.cy) * z1 / self.fy
+        x2_mm = (x2 - self.cx) * z2 / self.fx
+        y2_mm = (y2 - self.cy) * z2 / self.fy
+
+        distance = self._calculate_distance_meters(x1_mm, y1_mm, z1, x2_mm, y2_mm, z2)
 
         self.live_pipe_length = distance
         self.live_measurements.append(distance)
@@ -398,7 +403,12 @@ class PipeLengthMeasurement:
         if p1[2] <= 0 or p2[2] <= 0:
             return {'success': False, 'message': 'Invalid depth at one or both points'}
 
-        distance = self._calculate_distance_meters(p1[0], p1[1], p1[2], p2[0], p2[1], p2[2])
+        x1_mm = (p1[0] - self.cx) * p1[2] / self.fx
+        y1_mm = (p1[1] - self.cy) * p1[2] / self.fy
+        x2_mm = (p2[0] - self.cx) * p2[2] / self.fx
+        y2_mm = (p2[1] - self.cy) * p2[2] / self.fy
+
+        distance = self._calculate_distance_meters(x1_mm, y1_mm, p1[2], x2_mm, y2_mm, p2[2])
 
         self.burst_results.append({
             'frame_index': self.burst_current_index,
@@ -511,22 +521,12 @@ class PipeLengthMeasurement:
         self.frozen_color_frame = None
         self.frozen_depth_frame = None
 
-    def _calculate_distance_meters(self, x1: int, y1: int, z1: float,
-                                   x2: int, y2: int, z2: float) -> float:
-        """Calculate 3D Euclidean distance in meters using calibrated intrinsics."""
-        z1_m = z1 / 1000.0
-        z2_m = z2 / 1000.0
-
-        X1 = (x1 - self.cx) * z1_m / self.fx
-        Y1 = (y1 - self.cy) * z1_m / self.fy
-        X2 = (x2 - self.cx) * z2_m / self.fx
-        Y2 = (y2 - self.cy) * z2_m / self.fy
-
-        dx = X1 - X2
-        dy = Y1 - Y2
-        dz = z1_m - z2_m
-
-        return np.sqrt(dx**2 + dy**2 + dz**2)
+    def _calculate_distance_meters(self, x1: float, y1: float, z1: float,
+                                   x2: float, y2: float, z2: float) -> float:
+        """Calculate 3D Euclidean distance from real-world XYZ points in millimeters."""
+        p1_mm = np.array([x1, y1, z1], dtype=np.float64)
+        p2_mm = np.array([x2, y2, z2], dtype=np.float64)
+        return float(np.linalg.norm(p1_mm - p2_mm) * 0.001)
 
     def cleanup(self):
         """Cleanup camera resources."""
