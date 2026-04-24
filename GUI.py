@@ -5,7 +5,7 @@ Hardware : Intel OAK-D (via DepthAI)
 Left panel : Control buttons
               • Record Video
               • Length Measurement  → Length_measurement_Iceberg/final_product/main.py
-              • Crab Detection      → DISABLED (commented out, OAK-D port pending)
+              • Crab Detection      → SIFT-based live detection
               • Frequency Analysis  → Frequency_measurements/frequency_measurement.py
               • Iceberg Tracker     → Iceberg.html embedded via pywebview
 Right panel : Live OAK-D RGB feed
@@ -48,7 +48,6 @@ class CameraUI:
 
         # ── State ──────────────────────────────────────────────────────────
         self.pipeline      = None   # DepthAI pipeline
-        self.device        = None   # DepthAI device
         self.q_rgb         = None   # output queue from OAK-D
 
         # Fallback OpenCV cap (used when OAK-D is not available)
@@ -68,7 +67,7 @@ class CameraUI:
             dict(checks=50)
         )
         self.ref_features = self._load_reference_images()
-        self.detected_crabs = []  # Store detections for display
+        self.detected_crabs = []
 
         # ── Build UI then start camera ─────────────────────────────────────
         self._build_ui()
@@ -134,7 +133,7 @@ class CameraUI:
             command=self._run_length_measurement, attr="length_btn"
         )
 
-        # ── CRAB DETECTION (SIFT-based detection) ─────────────────────────
+        # ── CRAB DETECTION ────────────────────────────────────────────────
         self._make_button(
             parent=left, icon="🦀", label="Crab Detection",
             sublabel="Toggle SIFT detection (live)",
@@ -189,7 +188,6 @@ class CameraUI:
     # ──────────────────────────────────────────────────────────────────────────
     def _make_button(self, parent, icon, label, sublabel,
                      color, hover, command, attr):
-        """Styled card-button with hover effect."""
         frame = tk.Frame(parent, bg=color, cursor="hand2")
         frame.pack(fill=tk.X, padx=16, pady=6)
         inner = tk.Frame(frame, bg=color, padx=12, pady=10)
@@ -219,7 +217,7 @@ class CameraUI:
             widget.bind("<Button-1>", lambda e, cmd=command: cmd())
 
     # ══════════════════════════════════════════════════════════════════════════
-    #  CAMERA – OAK-D via DepthAI (falls back to OpenCV webcam)
+    #  CAMERA – OAK-D via DepthAI v3 (falls back to OpenCV webcam)
     # ══════════════════════════════════════════════════════════════════════════
 
     def _start_camera(self):
@@ -228,25 +226,19 @@ class CameraUI:
         else:
             self._start_opencv_fallback()
 
-    # ── OAK-D ────────────────────────────────────────────────────────────────
+    # ── OAK-D (DepthAI v3 API) ───────────────────────────────────────────────
     def _start_oakd(self):
         try:
             self.pipeline = dai.Pipeline()
 
-            cam_rgb = self.pipeline.create(dai.node.ColorCamera)
-            cam_rgb.setPreviewSize(640, 480)
-            cam_rgb.setInterleaved(False)
-            cam_rgb.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
-            cam_rgb.setFps(30)
+            cam = self.pipeline.create(dai.node.Camera)
+            cam.build()  # ✅ required before requestOutput in v3
+            preview_out = cam.requestOutput((640, 480), dai.ImgFrame.Type.BGR888p)
 
-            xout = self.pipeline.create(dai.node.XLinkOut)
-            xout.setStreamName("rgb")
-            cam_rgb.preview.link(xout.input)
+            # ✅ v3: queue created on the output object, no XLinkOut node needed
+            self.q_rgb = preview_out.createOutputQueue(maxSize=4, blocking=False)
 
-            self.device = dai.Device(self.pipeline)
-            self.q_rgb  = self.device.getOutputQueue(name="rgb",
-                                                     maxSize=4,
-                                                     blocking=False)
+            self.pipeline.start()
             self.is_running = True
             self.status_dot.config(fg="#00ff88")
             self.status_label.config(text=" OAK-D Live")
@@ -254,15 +246,21 @@ class CameraUI:
                 target=self._feed_loop_oakd, daemon=True)
             self.camera_thread.start()
         except Exception as exc:
-            self._show_placeholder(f"⚠  OAK-D error: {exc}")
+            print(f"OAK-D failed: {exc}, falling back to webcam...")
+            self._start_opencv_fallback()
 
     def _feed_loop_oakd(self):
         while self.is_running:
             try:
+                if not self.pipeline.isRunning():
+                    break
                 in_rgb = self.q_rgb.get()
-                frame  = in_rgb.getCvFrame()          # BGR numpy array
+                if in_rgb is None:
+                    continue
+                frame = in_rgb.getCvFrame()
                 self._process_frame(frame)
-            except Exception:
+            except Exception as e:
+                print(f"OAK-D feed error: {e}")
                 break
 
     # ── OpenCV fallback ───────────────────────────────────────────────────────
@@ -289,7 +287,6 @@ class CameraUI:
     def _process_frame(self, frame):
         self.current_frame = frame.copy()
 
-        # Apply crab detection if enabled
         if self.crab_detection_enabled:
             frame, self.detected_crabs = self._detect_crabs(frame)
 
@@ -328,7 +325,7 @@ class CameraUI:
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             filename  = f"recording_{timestamp}.avi"
             fourcc    = cv2.VideoWriter_fourcc(*"XVID")
-            if self.device:                          # OAK-D fixed resolution
+            if self.pipeline:                        # ✅ OAK-D fixed resolution
                 h, w = 480, 640
                 fps  = 30
             else:
@@ -368,89 +365,71 @@ class CameraUI:
         )
         self._launch_script(script_path, "Length Measurement")
 
-    # ── Crab Detection ───────────────────────────────────────────────────────
+    # ── Crab Detection ────────────────────────────────────────────────────────
     def _toggle_crab_detection(self):
-        """Toggle crab detection on/off."""
         self.crab_detection_enabled = not self.crab_detection_enabled
         status = "ON (live in feed)" if self.crab_detection_enabled else "OFF"
-        color = "#a755c8" if self.crab_detection_enabled else "#533483"
+        color  = "#a755c8" if self.crab_detection_enabled else "#533483"
         self.crab_btn.config(bg=color)
         messagebox.showinfo("Crab Detection", f"Crab detection: {status}")
 
     def _load_reference_images(self):
-        """Load crab reference image for SIFT matching."""
         ref_features = {}
         script_dir = os.path.dirname(os.path.abspath(__file__))
         img_path = os.path.join(script_dir, "carcinus-maenas.jpeg")
-        
         try:
             img_ref = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
             if img_ref is None:
                 print(f"Warning: Could not load reference image: {img_path}")
                 return ref_features
-            
             kp_ref, des_ref = self.sift.detectAndCompute(img_ref, None)
             ref_features["Crab"] = (kp_ref, des_ref, img_ref.shape)
             print(f"Loaded crab reference: {len(kp_ref)} keypoints")
         except Exception as e:
             print(f"Error loading reference image: {e}")
-        
         return ref_features
 
     def _detect_crabs(self, frame):
-        """Run crab detection on frame using SIFT."""
         if not self.crab_detection_enabled or not self.ref_features:
             return frame, []
-        
         try:
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             kp_target, des_target = self.sift.detectAndCompute(gray, None)
-            
             detected_centers = []
-            
+
             if des_target is not None and len(des_target) > 2:
                 for crab_name, (kp_ref, des_ref, (h_ref, w_ref)) in self.ref_features.items():
                     matches = self.flann.knnMatch(des_ref, des_target, k=2)
                     good = [m for m, n in matches if m.distance < 0.75 * n.distance]
-                    
+
                     if len(good) < 6:
                         continue
-                    
-                    # Multiple detection attempts
+
                     used_mask = np.zeros(len(kp_target), dtype=bool)
-                    
+
                     for attempt in range(5):
                         available_good = [m for m in good if not used_mask[m.trainIdx]]
-                        
                         if len(available_good) < 6:
                             break
-                        
+
                         src_pts = np.float32([kp_ref[m.queryIdx].pt for m in available_good]).reshape(-1, 1, 2)
                         dst_pts = np.float32([kp_target[m.trainIdx].pt for m in available_good]).reshape(-1, 1, 2)
-                        
+
                         M, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
                         if M is not None:
-                            pts = np.float32([[0, 0], [0, h_ref - 1], [w_ref - 1, h_ref - 1], [w_ref - 1, 0]]).reshape(-1, 1, 2)
+                            pts = np.float32([[0, 0], [0, h_ref-1], [w_ref-1, h_ref-1], [w_ref-1, 0]]).reshape(-1, 1, 2)
                             dst = cv2.perspectiveTransform(pts, M)
-                            
                             area = cv2.contourArea(np.int32(dst))
                             if 200 < area < 500000:
-                                # Draw detection
                                 cv2.polylines(frame, [np.int32(dst)], True, (0, 255, 0), 2, cv2.LINE_AA)
-                                
-                                # Center point
                                 center_x = int(np.mean(dst[:, 0, 0]))
                                 center_y = int(np.mean(dst[:, 0, 1]))
                                 detected_centers.append((center_x, center_y))
                                 cv2.circle(frame, (center_x, center_y), 5, (0, 0, 255), -1)
-                                
-                                # Mark used keypoints
                                 inlier_indices = np.where(mask.ravel())[0]
                                 for idx in inlier_indices:
-                                    actual_idx = available_good[idx].trainIdx
-                                    used_mask[actual_idx] = True
-            
-            # Draw proximity lines
+                                    used_mask[available_good[idx].trainIdx] = True
+
             if len(detected_centers) > 1:
                 proximity_threshold = 150
                 for i in range(len(detected_centers)):
@@ -459,13 +438,12 @@ class CameraUI:
                         dist = math.sqrt((p1[0]-p2[0])**2 + (p1[1]-p2[1])**2)
                         if dist < proximity_threshold:
                             cv2.line(frame, p1, p2, (255, 255, 0), 2)
-            
-            # Draw stats
-            cv2.putText(frame, f"Crabs detected: {len(detected_centers)}", (10, frame.shape[0] - 20),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-            
+
+            cv2.putText(frame, f"Crabs detected: {len(detected_centers)}",
+                        (10, frame.shape[0] - 20),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
             return frame, detected_centers
-        
+
         except Exception as e:
             print(f"Crab detection error: {e}")
             return frame, []
@@ -478,7 +456,7 @@ class CameraUI:
         )
         self._launch_script(script_path, "Frequency Analysis")
 
-    # ── Iceberg Tracker (embedded HTML via pywebview) ─────────────────────────
+    # ── Iceberg Tracker ───────────────────────────────────────────────────────
     def _open_iceberg(self):
         html_path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
@@ -492,7 +470,6 @@ class CameraUI:
             return
 
         if not WEBVIEW_AVAILABLE:
-            # Graceful fallback: open in default browser
             import webbrowser
             webbrowser.open(f"file://{html_path}")
             messagebox.showinfo(
@@ -502,11 +479,8 @@ class CameraUI:
             )
             return
 
-        # ── pywebview MUST run on the main thread on macOS.
-        # Strategy: hide the Tkinter window, run webview (blocking), then
-        # restore Tkinter when the webview window is closed.
         def _run_webview():
-            self.root.withdraw()          # hide Tk window while webview is open
+            self.root.withdraw()
             try:
                 win = webview.create_window(
                     title="Iceberg Threat Tracker",
@@ -515,14 +489,12 @@ class CameraUI:
                     height=750,
                     resizable=True,
                 )
-                webview.start()           # blocks until all webview windows close
+                webview.start()
             except Exception as exc:
                 messagebox.showerror("Iceberg Tracker Error", str(exc))
             finally:
-                self.root.deiconify()     # restore Tk window afterwards
+                self.root.deiconify()
 
-        # Schedule on the main thread via after() so any pending Tk events
-        # flush first, then we hand control to webview.
         self.root.after(50, _run_webview)
 
     # ── Generic script launcher ───────────────────────────────────────────────
@@ -548,13 +520,12 @@ class CameraUI:
         self.is_recording = False
         if self.video_writer:
             self.video_writer.release()
-        # Release OAK-D device
-        if self.device:
+        # ✅ v3: stop pipeline instead of device.close()
+        if self.pipeline:
             try:
-                self.device.close()
+                self.pipeline.stop()
             except Exception:
                 pass
-        # Release fallback OpenCV capture
         if self.cap:
             self.cap.release()
         self.root.destroy()
@@ -584,3 +555,4 @@ if __name__ == "__main__":
     root.minsize(780, 520)
     app = CameraUI(root)
     root.mainloop()
+    
