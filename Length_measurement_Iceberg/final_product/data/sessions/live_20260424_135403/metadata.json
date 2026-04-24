@@ -1,0 +1,13 @@
+{
+  "type": "live_measurement",
+  "pipe_length": 0.0,
+  "point1": {
+    "x": 406,
+    "y": 116
+  },
+  "point2": {
+    "x": 368,
+    "y": 312
+  },
+  "timestamp": "2026-04-24T13:54:03.690366"
+}

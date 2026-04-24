@@ -282,8 +282,14 @@ class PipeLengthMeasurement:
         z1 = float(depth_frame[y1, x1]) if np.isfinite(depth_frame[y1, x1]) else 0.0
         z2 = float(depth_frame[y2, x2]) if np.isfinite(depth_frame[y2, x2]) else 0.0
         if z1 <= 0 or z2 <= 0:
+            # Debug: log why measurement is invalid
+            if self.frame_count % 30 == 0:  # Log every ~30 frames to avoid spam
+                print(f"[DEBUG] Invalid depth: z1={z1:.3f}m, z2={z2:.3f}m at ({x1},{y1}) and ({x2},{y2})")
             return {'invalid': True}
         d = self._calculate_distance_between_points(x1, y1, z1, x2, y2, z2)
+        # Debug: log successful measurement
+        if len(self.live_measurements) == 0:  # First measurement
+            print(f"[DEBUG] First measurement: d={d:.4f}m, z1={z1:.3f}m, z2={z2:.3f}m")
         self.live_pipe_length = d
         self.live_measurements.append(d)
         return {'invalid': False, 'pipe_length': d,

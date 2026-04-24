@@ -129,6 +129,12 @@ class _GUIIcebergSystem(IcebergTrackingSystem if PIPE_MEASUREMENT_AVAILABLE else
                 self.width = 640
                 self.height = 480
 
+                # Camera intrinsics for OAK-D 640x480 (must match pipe_length_measurement.py)
+                self.fx = 430.0
+                self.fy = 430.0
+                self.cx = 320.0
+                self.cy = 240.0
+
                 # Mark as available so all logic branches run
                 self.camera_available = True
 
@@ -138,7 +144,12 @@ class _GUIIcebergSystem(IcebergTrackingSystem if PIPE_MEASUREMENT_AVAILABLE else
                 self.latest_depth = depth
                 self.frame_count += 1
                 elapsed = _time.time() - self.fps_start_time
-                if elapsed > 0:
+                # Reset FPS calculation every 2 seconds for accurate current FPS
+                if elapsed > 2.0:
+                    self.fps = self.frame_count / elapsed
+                    self.frame_count = 0
+                    self.fps_start_time = _time.time()
+                elif elapsed > 0:
                     self.fps = self.frame_count / elapsed
 
             def cleanup(self):
@@ -1364,6 +1375,28 @@ class CameraUI:
     # ══════════════════════════════════════════════════════════════════════════
     #  CLEANUP
     # ══════════════════════════════════════════════════════════════════════════
+
+    def _stop_all_tasks(self, keep_measurement=False, keep_crab=False, keep_recording=False):
+        """Stop all active tasks to prevent conflicts when starting a new task."""
+        # Stop crab detection (unless explicitly keeping)
+        if not keep_crab and self.crab_detection_enabled:
+            self.crab_detection_enabled = False
+            self.crab_btn.config(bg="#533483")
+
+        # Stop measurement (unless explicitly keeping)
+        if not keep_measurement and self.measurement_active:
+            self.measurement_active = False
+            if self.pm:
+                self.pm.reset_live_continuous()
+                self.pm.reset_to_live()
+            self.length_btn.config(bg="#0f3460")
+            self.meas_mode_label.config(text="")
+            self.key_hint_label.config(text="")
+
+        # Note: Recording is typically kept running as it's independent
+        # But can be stopped if needed via keep_recording=False
+        if not keep_recording and self.is_recording:
+            self._toggle_record()  # Stop recording
 
     def _on_close(self):
         self.is_running   = False
