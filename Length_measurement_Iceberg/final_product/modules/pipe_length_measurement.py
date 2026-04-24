@@ -120,6 +120,13 @@ class PipeLengthMeasurement:
         self.width  = 640
         self.height = 480
 
+        # Camera intrinsics for OAK-D 640x480 resolution
+        # These are typical values; can be calibrated for specific device
+        self.fx = 430.0  # focal length x (pixels)
+        self.fy = 430.0  # focal length y (pixels)
+        self.cx = 320.0  # principal point x (center of image)
+        self.cy = 240.0  # principal point y (center of image)
+
         # Set to False if camera fails; callers can check this flag
         self.camera_available = False
 
@@ -433,32 +440,42 @@ class PipeLengthMeasurement:
 
     # ── Distance math ────────────────────────────────────────────────────────
 
+    def _deproject_to_3d(self, u: int, v: int, z: float) -> tuple:
+        """
+        Deproject 2D pixel coordinates + depth to 3D camera coordinates.
+        Uses OAK-D camera intrinsics for accurate 3D reconstruction.
+        
+        Args:
+            u, v: pixel coordinates (x, y)
+            z: depth in meters
+        Returns:
+            (X, Y, Z) in meters, camera coordinate system
+        """
+        if z <= 0 or not np.isfinite(z):
+            return (0.0, 0.0, 0.0)
+        # Standard pinhole camera deprojection
+        # X = (u - cx) * Z / fx
+        # Y = (v - cy) * Z / fy
+        # Z = depth
+        X = (u - self.cx) * z / self.fx
+        Y = (v - self.cy) * z / self.fy
+        return (X, Y, z)
+
     def _calculate_distance_between_points(self, x1, y1, z1, x2, y2, z2) -> float:
         """
-        Calculate 3D distance between two points.
+        Calculate 3D distance between two points using proper camera 3D coordinates.
         x1,y1,x2,y2: pixel coordinates
-        z1,z2: depth in meters
+        z1,z2: depth in meters (from OAK-D depth frame)
         """
-        dx = x1 - x2  # pixels
-        dy = y1 - y2  # pixels
-        dz = z1 - z2  # meters
-        
-        # Approximate pixel-to-meter conversion using average depth
-        # Assumes OAK-D with ~75 degree FOV
-        avg_z = (z1 + z2) / 2.0
-        if avg_z <= 0:
-            avg_z = 1.0
-        
-        # Rough conversion: tan(FOV/2) ≈ image_width / (2 * focal_length)
-        # For OAK-D 640px width: ~75 deg FOV gives focal_length ≈ 430 pixels
-        FOCAL_LENGTH = 430.0
-        pixels_to_meters = avg_z / FOCAL_LENGTH
-        
-        dx_real = dx * pixels_to_meters
-        dy_real = dy * pixels_to_meters
-        
-        # Euclidean distance in meters
-        distance = np.sqrt(dx_real**2 + dy_real**2 + dz**2)
+        # Deproject both points to 3D camera coordinates
+        X1, Y1, Z1 = self._deproject_to_3d(x1, y1, z1)
+        X2, Y2, Z2 = self._deproject_to_3d(x2, y2, z2)
+
+        # Euclidean distance in 3D camera space
+        dx = X1 - X2
+        dy = Y1 - Y2
+        dz = Z1 - Z2
+        distance = np.sqrt(dx**2 + dy**2 + dz**2)
         return float(distance)
 
     # ── Cleanup ──────────────────────────────────────────────────────────────
