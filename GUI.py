@@ -49,88 +49,132 @@ try:
 except ImportError:
     WEBVIEW_AVAILABLE = False
 
-# ── Length Measurement logic (no camera init – GUI owns the feed) ─────────────
+# ── Length Measurement logic from main.py (no camera init – GUI owns the feed) ─
 sys.path.insert(0, str(Path(__file__).parent / "Length_measurement_Iceberg" / "final_product"))
 try:
+    # Import IcebergTrackingSystem from main.py to use its full logic
+    from main import IcebergTrackingSystem, AppState
     from modules.pipe_length_measurement import (
         PipeLengthMeasurement, MeasurementState, MeasurementMode
     )
+    from modules.video_overlay import VideoOverlay
     PIPE_MEASUREMENT_AVAILABLE = True
-except ImportError:
+except ImportError as _e:
     PIPE_MEASUREMENT_AVAILABLE = False
-    print("⚠  PipeLengthMeasurement not found – measurement disabled")
+    print(f"⚠  Measurement modules not found – measurement disabled: {_e}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Thin wrapper so PipeLengthMeasurement never touches the camera itself
+# Headless IcebergTrackingSystem - uses main.py logic but GUI provides frames
 # ─────────────────────────────────────────────────────────────────────────────
-class _HeadlessMeasurement(PipeLengthMeasurement if PIPE_MEASUREMENT_AVAILABLE else object):
+class _GUIIcebergSystem(IcebergTrackingSystem if PIPE_MEASUREMENT_AVAILABLE else object):
     """
-    Subclass that skips _init_camera entirely.
-    The GUI feed-loop is responsible for pushing frames via
-    push_frames(color, depth) before every display tick.
+    Extended IcebergTrackingSystem that works with GUI-owned camera.
+    Overrides camera initialization to work in 'headless' mode where
+    the GUI feed-loop pushes frames via push_frames().
     """
-    def __init__(self, num_frames: int = 30):
-        # Bypass PipeLengthMeasurement.__init__ camera code
+    def __init__(self, gui_app, num_frames: int = 30):
+        self._gui_app = gui_app  # Reference to CameraUI for frame pushing
+
+        # Initialize parent but suppress its camera initialization
+        # by temporarily disabling the camera init in PipeLengthMeasurement
+        super().__init__(config_dir="./config")
+
+        # Replace the pipe_measure with a headless version
+        # that accepts frames from GUI instead of owning the camera
+        self._init_headless_measurement(num_frames)
+
+    def _init_headless_measurement(self, num_frames: int = 30):
+        """Initialize measurement in headless mode (GUI provides frames)."""
         import logging, time as _time
-        self.logger    = logging.getLogger(__name__)
-        self.num_frames = num_frames
 
-        self.state            = MeasurementState.LIVE
-        self.measurement_mode = MeasurementMode.LIVE_CONTINUOUS
+        # Create a headless PipeLengthMeasurement instance
+        class _HeadlessPipeMeasurement(PipeLengthMeasurement):
+            def __init__(self, num_frames: int = 30):
+                # Skip parent __init__ which tries to init camera
+                self.logger = logging.getLogger(__name__)
+                self.num_frames = num_frames
+                self.state = MeasurementState.LIVE
+                self.measurement_mode = MeasurementMode.LIVE_CONTINUOUS
 
-        self.pipeline    = None
-        self.color_queue = None
-        self.depth_queue = None
+                self.pipeline = None
+                self.color_queue = None
+                self.depth_queue = None
 
-        self.frame_count    = 0
-        self.fps            = 0.0
-        self.fps_start_time = _time.time()
+                self.frame_count = 0
+                self.fps = 0.0
+                self.fps_start_time = _time.time()
 
-        self.latest_color = None
-        self.latest_depth = None
-        self.capture_thread = None
-        self.running = True
+                self.latest_color = None
+                self.latest_depth = None
+                self.capture_thread = None
+                self.running = True
 
-        # Live-continuous state
-        self.live_points       = []
-        self.live_pipe_length  = None
-        self.live_measurements = []
-        self.live_is_measuring = False
+                # Live-continuous state
+                self.live_points = []
+                self.live_pipe_length = None
+                self.live_measurements = []
+                self.live_is_measuring = False
 
-        # Burst state
-        self.burst_color_frames      = []
-        self.burst_depth_frames      = []
-        self.burst_results           = []
-        self.burst_current_index     = 0
-        self.burst_pending_points    = []
-        self.burst_carry_over_points = []
-        self.frozen_color_frame      = None
-        self.frozen_depth_frame      = None
+                # Burst state
+                self.burst_color_frames = []
+                self.burst_depth_frames = []
+                self.burst_results = []
+                self.burst_current_index = 0
+                self.burst_pending_points = []
+                self.burst_carry_over_points = []
+                self.frozen_color_frame = None
+                self.frozen_depth_frame = None
 
-        self.width  = 640
-        self.height = 480
+                self.width = 640
+                self.height = 480
 
-        # Mark as available so all logic branches run
-        self.camera_available = True
+                # Mark as available so all logic branches run
+                self.camera_available = True
+
+            def push_frames(self, color: np.ndarray, depth):
+                """Called by the GUI feed-loop every frame."""
+                self.latest_color = color
+                self.latest_depth = depth
+                self.frame_count += 1
+                elapsed = _time.time() - self.fps_start_time
+                if elapsed > 0:
+                    self.fps = self.frame_count / elapsed
+
+            def cleanup(self):
+                self.running = False
+
+        # Replace the pipe_measure with our headless version
+        if self.pipe_measure:
+            self.pipe_measure.cleanup()
+        self.pipe_measure = _HeadlessPipeMeasurement(num_frames)
+        self.logger.info("Headless measurement system initialized (GUI provides frames)")
 
     def push_frames(self, color: np.ndarray, depth):
-        """Called by the GUI feed-loop every frame."""
-        self.latest_color = color
-        self.latest_depth = depth
-        self.frame_count += 1
-        import time as _t
-        elapsed = _t.time() - self.fps_start_time
-        if elapsed > 0:
-            self.fps = self.frame_count / elapsed
+        """Push frames from GUI feed-loop into the measurement system."""
+        if self.pipe_measure:
+            self.pipe_measure.push_frames(color, depth)
+
+            # Auto-capture during burst
+            if self.pipe_measure.state == MeasurementState.CAPTURING:
+                self.pipe_measure.capture_burst_frame(color, depth)
+
+    @property
+    def pm(self):
+        """Alias for pipe_measure for compatibility."""
+        return self.pipe_measure
+
+    def run(self):
+        """Override to prevent main.py from starting its own event loop."""
+        # The GUI owns the main loop, so this should not be called
+        self.logger.warning("run() should not be called in GUI mode - GUI owns the event loop")
 
     def cleanup(self):
-        self.running = False
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Helpers
-# ─────────────────────────────────────────────────────────────────────────────
+        """Override cleanup to avoid destroying windows (GUI manages them)."""
+        self.logger.info("Cleaning up headless measurement system...")
+        if self.pipe_measure:
+            self.pipe_measure.cleanup()
+        # Don't call cv2.destroyAllWindows() - GUI manages its own windows
 
 def _all_children(widget):
     children = list(widget.winfo_children())
@@ -166,6 +210,7 @@ class CameraUI:
         self.current_frame = None          # latest raw BGR frame
         self.latest_depth  = None          # latest depth (metres, float32)
         self.camera_thread = None
+        self.frame_count   = 0             # Frame counter for debug logging
 
         # ── Recording ─────────────────────────────────────────────────────
         self.is_recording  = False
@@ -180,24 +225,32 @@ class CameraUI:
         self.ref_features   = self._load_reference_images()
         self.detected_crabs = []
 
-        # ── Length Measurement (headless – GUI owns feed) ──────────────────
+        # ── Length Measurement (using main.py IcebergTrackingSystem) ─────
         self.measurement_active = False   # True while panel is open
-        self.pm: _HeadlessMeasurement | None = None
+        self.iceberg_system: _GUIIcebergSystem | None = None
+        self.pm = None  # Alias to pipe_measure for compatibility
 
         if PIPE_MEASUREMENT_AVAILABLE:
             try:
-                self.pm = _HeadlessMeasurement(num_frames=30)
-                print("✓ PipeLengthMeasurement engine ready (headless)")
+                self.iceberg_system = _GUIIcebergSystem(self, num_frames=30)
+                self.pm = self.iceberg_system.pm  # Alias for compatibility
+                print("✓ IcebergTrackingSystem from main.py ready (GUI headless mode)")
             except Exception as exc:
                 print(f"✗ Could not create measurement engine: {exc}")
 
-        # Notification banner
+        # VideoOverlay from main.py for consistent display logic
+        self.video_overlay = VideoOverlay() if PIPE_MEASUREMENT_AVAILABLE else None
+
+        # Notification banner (now managed by IcebergTrackingSystem)
         self.save_notification_time = 0.0
         self.save_message           = ""
 
-        # Session persistence path (mirrors main.py)
-        self.session_base_path = Path(__file__).parent / "data" / "sessions"
-        self.session_base_path.mkdir(parents=True, exist_ok=True)
+        # Session persistence path (now from IcebergTrackingSystem)
+        if self.iceberg_system:
+            self.session_base_path = self.iceberg_system.session_base_path
+        else:
+            self.session_base_path = Path(__file__).parent / "data" / "sessions"
+            self.session_base_path.mkdir(parents=True, exist_ok=True)
 
         # ── Build UI then start camera ─────────────────────────────────────
         self._build_ui()
@@ -408,18 +461,30 @@ class CameraUI:
                     try:
                         in_depth = self.q_depth.get()
                         if in_depth is not None:
-                            depth_frame = in_depth.getFrame().astype(np.float32) / 1000.0
-                            self.latest_depth = depth_frame.copy()
-                    except Exception:
-                        pass
+                            raw_depth = in_depth.getFrame()
+                            # DepthAI v3: depth is typically uint16 in mm, convert to float32 meters
+                            if raw_depth is not None:
+                                if raw_depth.dtype == np.uint16:
+                                    depth_frame = raw_depth.astype(np.float32) / 1000.0
+                                elif raw_depth.dtype == np.float32:
+                                    # Already in meters or needs different scaling
+                                    depth_frame = raw_depth
+                                else:
+                                    depth_frame = raw_depth.astype(np.float32)
+                                self.latest_depth = depth_frame.copy()
+                                # Debug: log depth reception (first few frames only)
+                                if self.frame_count < 5:
+                                    print(f"[Depth] Frame {self.frame_count}: shape={depth_frame.shape}, "
+                                          f"dtype={raw_depth.dtype}, min={depth_frame.min():.2f}, "
+                                          f"max={depth_frame.max():.2f}m")
+                    except Exception as exc:
+                        if self.frame_count < 5:
+                            print(f"[Depth] Error: {exc}")
+                self.frame_count += 1
 
                 # ── Push into measurement engine ───────────────────────────
-                if self.pm and self.measurement_active:
-                    self.pm.push_frames(frame, depth_frame)
-
-                    # Auto-capture during burst
-                    if self.pm.state == MeasurementState.CAPTURING:
-                        self.pm.capture_burst_frame(frame, depth_frame)
+                if self.iceberg_system and self.measurement_active:
+                    self.iceberg_system.push_frames(frame, depth_frame)
 
                 self._process_frame(frame)
             except Exception as exc:
@@ -923,6 +988,9 @@ class CameraUI:
                 "Check that Length_measurement_Iceberg/final_product/modules/ exists.")
             return
 
+        # Stop other tasks before toggling measurement
+        self._stop_all_tasks(keep_measurement=True)
+
         self.measurement_active = not self.measurement_active
 
         if self.measurement_active:
@@ -1024,6 +1092,9 @@ class CameraUI:
 
     # ── Crab detection ────────────────────────────────────────────────────────
     def _toggle_crab_detection(self):
+        # Stop other tasks before toggling crab detection
+        self._stop_all_tasks(keep_crab=True)
+
         self.crab_detection_enabled = not self.crab_detection_enabled
         status = "ON" if self.crab_detection_enabled else "OFF"
         self.crab_btn.config(bg="#a755c8" if self.crab_detection_enabled else "#533483")
@@ -1093,12 +1164,18 @@ class CameraUI:
 
     # ── Frequency Analysis ────────────────────────────────────────────────────
     def _run_frequency_analysis(self):
+        # Stop all camera-related tasks before launching external script
+        self._stop_all_tasks()
+
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "Frequency_measurements", "frequency_measurement.py")
         self._launch_script(path, "Frequency Analysis")
 
     # ── Iceberg Tracker ───────────────────────────────────────────────────────
     def _open_iceberg(self):
+        # Stop all camera-related tasks before opening webview
+        self._stop_all_tasks()
+
         html = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Iceberg.html")
         if not os.path.exists(html):
             messagebox.showerror("Iceberg Tracker – Not Found",
