@@ -1,7 +1,21 @@
-// Mission sequence:
-// PRE_COMM -> DESCENDING -> HOLDING(deep)-> ASCENDING -> HOLDING(shallow) -> DESCENDING -> HOLDING(deep) -> ASCENDING -> HOLDING(shallow) -> SURFACING  -> RECOVERED -> TRANSMIT  -> DONE
-
-// Safe failure mode for any motion-state timeout is SURFACING (empty syringe,float to the surface). PRE_COMM does NOT auto-dive on timeout; it keeps beaconing forever because we never want an unacknowledged dive.
+// float_esp.ino
+// mate rov 2026 pioneer class — autonomous vertical profiling float.
+//
+// mission sequence:
+//   pre_comm -> descending -> holding(deep)    -> ascending -> holding(shallow)
+//            -> descending -> holding(deep)    -> ascending -> holding(shallow)
+//            -> surfacing  -> recovered        -> transmit  -> done
+//
+// depth reference:
+//   sensor is at the bottom of the float. mate measures deep hold to the
+//   bottom of the float (= sensor) and shallow hold to the top of the float
+//   (= sensor - FLOAT_LENGTH_M). shallow_depth accounts for this offset.
+//
+// safe failure modes:
+//   - motorInit() fails at boot: trapPermanent(), loop() never runs.
+//   - homeMotor() fails at pre_comm: stay in pre_comm, next ack retries.
+//   - any motion-state watchdog expires: route to surfacing (empty syringe).
+//   - ascending sensor depth above BREACH_GUARD_M: override pid, fill syringe.
 
 #include "PIDController.h"
 #include "MotorModule.h"
@@ -11,163 +25,215 @@
 #include "packet.h"
 #include <math.h>
 
+// ============================================================
 // mission parameters
-#define DEEP_DEPTH      2.5f    // m, target for deep holds
-#define SHALLOW_DEPTH   0.40f   // m, target for shallow holds
-#define DEPTH_MARGIN    0.33f   // m, ± band that counts as "at depth"
-#define TARGET_HOLD_MS  30000UL // 30 s hold per MATE rubric
+// ============================================================
 
-// Surface-detection trigger (SURFACING -> RECOVERED)
-#define SURFACE_DEPTH_M   0.15f
+#define FLOAT_LENGTH_M 0.50f                   // top-to-bottom float length
+#define DEEP_DEPTH 2.5f                        // sensor target for deep hold
+#define SHALLOW_DEPTH (0.40f + FLOAT_LENGTH_M) // sensor target = top-at-0.40m
+#define DEPTH_MARGIN 0.33f                     // ± band per mate rubric
+#define TARGET_HOLD_MS 30000UL                 // 30 s hold per mate rubric
+
+// surface-detection trigger (surfacing -> recovered)
+#define SURFACE_DEPTH_M 0.15f
 #define SURFACE_STABLE_MS 3000UL
 
-// Per-state abort watchdogs. On expiry, motion states route to SURFACING.
-// PRE_COMM does not auto-advance; it just logs the timeout.
-#define PRECOMM_WARN_MS    300000UL  // 5 min: log a warning but keep beaconing
-#define DESCEND_TIMEOUT_MS  90000UL  // 90 s to reach deep target
-#define ASCEND_TIMEOUT_MS   90000UL  // 90 s to reach shallow target
-#define HOLD_TIMEOUT_MS    120000UL  // 120 s cap on a single hold attempt
-#define SURFACE_TIMEOUT_MS  60000UL  // 60 s to surface once syringe is emptying
+// anti-breach floor for ascending: if sensor gets shallower than this,
+// override pid and fill syringe. sensor at 0.57m = top of float at 0.07m,
+// matching the upper edge of the rubric's shallow band.
+#define BREACH_GUARD_M 0.57f
 
-// Control loop
-#define LOOP_MS    100          // 10 Hz
-#define MAX_DT_S   0.5f         // clamp dt to avoid PID blowup after a long loop
+// per-state abort watchdogs; motion states route to surfacing on expiry.
+#define PRECOMM_WARN_MS 300000UL // 5 min: warn but keep beaconing
+#define DESCEND_TIMEOUT_MS 90000UL
+#define ASCEND_TIMEOUT_MS 90000UL
+#define HOLD_TIMEOUT_MS 60000UL // tight to protect 15-min demo budget
+#define SURFACE_TIMEOUT_MS 60000UL
 
-// Sensor sanity bounds (pool is ~3 m; anything outside is garbage)
-#define MIN_VALID_DEPTH_M  (-0.5f)
-#define MAX_VALID_DEPTH_M  ( 5.0f)
+// boot-time motor init retry
+#define INIT_RETRY_MS 500UL
+#define INIT_RETRY_BUDGET_MS 5000UL
 
-// PID 
-// Shared gains for DESCENDING and ASCENDING for now. Structured so gains can be split later via runPID()'s Direction parameter.
-// TODO: TUNE during pool testing!
-#define PID_KP_SHARED  8.0
-#define PID_KI_SHARED  0.3
-#define PID_KD_SHARED  0.8
+// on-deck calibration sanity check
+#define ONDECK_DEPTH_THRESHOLD_M 0.05f
 
-#define SYRINGE_MAX_ML 50.0
+// control loop
+#define LOOP_MS 100
+#define MAX_DT_S 0.5f
+
+// sensor sanity bounds
+#define MIN_VALID_DEPTH_M (-0.5f)
+#define MAX_VALID_DEPTH_M 5.0f
+
+// ============================================================
+// pid config
+// ============================================================
+
+// output: absolute syringe volume (mL), clamped to [0, SYRINGE_MAX_ML].
+// shared gains for both directions; split later via runPID's Direction arg.
+// TODO: tune during pool testing
+#define PID_KP_SHARED 8.0
+#define PID_KI_SHARED 0.3
+#define PID_KD_SHARED 0.8
+
+// SYRINGE_MAX_ML comes from MotorModule.h (single source of truth)
 
 PIDController pid(PID_KP_SHARED, PID_KI_SHARED, PID_KD_SHARED, 0.0, SYRINGE_MAX_ML);
-MotorModule   motor;
-SensorModule  sensor;
-DataLogger    logger;
-ESPNowSender  sender;
+MotorModule motor;
+SensorModule sensor;
+DataLogger logger;
+ESPNowSender sender;
 
-// -------------------- FSM --------------------
-enum State : uint8_t {
-  PRE_COMM   = 0,
+// ============================================================
+// fsm
+// ============================================================
+
+enum State : uint8_t
+{
+  PRE_COMM = 0,
   DESCENDING = 1,
-  ASCENDING  = 2,
-  HOLDING    = 3,
-  SURFACING  = 4,
-  RECOVERED  = 5,
-  TRANSMIT   = 6,
-  DONE       = 7
+  ASCENDING = 2,
+  HOLDING = 3,
+  SURFACING = 4,
+  RECOVERED = 5,
+  TRANSMIT = 6,
+  DONE = 7
 };
 
-// Task index: 0=deep1, 1=shallow1, 2=deep2, 3=shallow2, 4=profiles complete.
-uint8_t nextTask     = 0;
-State   currentState = PRE_COMM;
-State   prevState    = PRE_COMM; // for enterState() detection
+// task index: 0=deep1, 1=shallow1, 2=deep2, 3=shallow2, 4=profiles complete
+uint8_t nextTask = 0;
+State currentState = PRE_COMM;
+State prevState = PRE_COMM;
 
-// -------------------- Sensor state --------------------
-float currentDepth    = 0.0f;
+enum Direction : uint8_t
+{
+  DIR_DOWN = 0,
+  DIR_UP = 1
+};
+
+// ============================================================
+// runtime state
+// ============================================================
+
+// sensor readings
+float currentDepth = 0.0f;
 float currentPressure = 0.0f;
-float lastValidDepth  = 0.0f;
+float lastValidDepth = 0.0f;
 
-// -------------------- Timers --------------------
-uint32_t stateEnteredMs    = 0;   // ms at entry to currentState
-uint32_t holdCounter       = 0;
-uint32_t lastHoldUpdateMs  = 0;
-uint32_t surfaceStableMs   = 0;
+// timers
+uint32_t stateEnteredMs = 0;
+uint32_t holdCounter = 0;
+uint32_t lastHoldUpdateMs = 0;
+uint32_t surfaceStableMs = 0;
 uint32_t lastSurfaceUpdate = 0;
 
-uint32_t lastLoopMs    = 0;
-uint32_t lastLogMs     = 0;
-uint32_t lastBeaconMs  = 0;
-uint32_t lastTxMs      = 0;
-bool     precommWarned = false;
+uint32_t lastLoopMs = 0;
+uint32_t lastLogMs = 0;
+uint32_t lastBeaconMs = 0;
+uint32_t lastTxMs = 0;
+bool precommWarned = false;
 
-uint16_t txIndex      = 0;
+uint16_t txIndex = 0;
 uint16_t nextSequence = 1;
 
-// -------------------- Direction tag (for future gain-splitting) --------------------
-enum Direction : uint8_t { DIR_DOWN = 0, DIR_UP = 1 };
+// true only after a successful home
+bool homingOk = false;
 
+// ============================================================
+// forward decls
+// ============================================================
 
-// -------------------- Forward decls --------------------
 void enterState(State s, uint32_t now);
-void fillPacketHeader(DataPacket& pkt);
+void fillPacketHeader(DataPacket &pkt);
 float targetDepth();
-bool  atDepth(float target);
+bool atDepth(float target);
 State nextLegState();
-bool  holdComplete(uint32_t now);
-void  runPID(float target, float dt, Direction dir);
-void  logIfDue(uint32_t now);
-bool  surfacedAndStable(uint32_t now);
-bool  depthIsSane(float d);
-void  abortToSurfacing(uint32_t now);
+bool holdComplete(uint32_t now);
+void runPID(float target, float dt, Direction dir);
+void logIfDue(uint32_t now);
+bool surfacedAndStable(uint32_t now);
+bool depthIsSane(float d);
+void abortToSurfacing(uint32_t now);
+void trapPermanent(const __FlashStringHelper *reason);
 
+// ============================================================
+// helpers
+// ============================================================
 
-// ==================== Helpers ====================
-
-// Centralized state transition. Resets per-state counters here so no call site
-// can forget to initialize them.
-void enterState(State s, uint32_t now) {
-  prevState      = currentState;
-  currentState   = s;
+// centralized state transition; resets per-state counters in one place
+void enterState(State s, uint32_t now)
+{
+  prevState = currentState;
+  currentState = s;
   stateEnteredMs = now;
 
-  switch (s) {
-    case HOLDING:
-      holdCounter      = 0;
-      lastHoldUpdateMs = now;
-      break;
-    case SURFACING:
-      motor.setTargetPosition(0); // empty syringe = max buoyancy
-      surfaceStableMs   = 0;
-      lastSurfaceUpdate = now;
-      break;
-    case TRANSMIT:
-      txIndex = 0;
-      lastTxMs = 0;
-      break;
-    case PRE_COMM:
-      precommWarned = false;
-      break;
-    default:
-      break;
+  switch (s)
+  {
+  case HOLDING:
+    holdCounter = 0;
+    lastHoldUpdateMs = now;
+    // TODO (pool): if drift observed during deep hold, uncomment:
+    // motor.setHoldingMode(true);
+    break;
+  case SURFACING:
+    motor.setTargetPosition(0); // empty syringe = max buoyancy
+    surfaceStableMs = 0;
+    lastSurfaceUpdate = now;
+    // motor.setHoldingMode(false);
+    break;
+  case TRANSMIT:
+    txIndex = 0;
+    lastTxMs = 0;
+    break;
+  case PRE_COMM:
+    precommWarned = false;
+    break;
+  default:
+    break;
   }
 }
 
-// Fills the common identifier/timestamp/state fields on any outgoing packet.
-void fillPacketHeader(DataPacket& pkt) {
+// fills common fields on any outgoing packet
+void fillPacketHeader(DataPacket &pkt)
+{
   strncpy(pkt.companyID, COMPANY_ID, sizeof(pkt.companyID) - 1);
   pkt.companyID[sizeof(pkt.companyID) - 1] = '\0';
-  pkt.state      = (uint8_t)currentState;
+  pkt.state = (uint8_t)currentState;
   pkt.profileNum = (nextTask >= 2) ? 2 : 1;
+  pkt.homingOk = homingOk; // requires field in packet.h
 }
 
-float targetDepth() {
-  if (nextTask == 0 || nextTask == 2) return DEEP_DEPTH;
-  if (nextTask == 1 || nextTask == 3) return SHALLOW_DEPTH;
+float targetDepth()
+{
+  if (nextTask == 0 || nextTask == 2)
+    return DEEP_DEPTH;
+  if (nextTask == 1 || nextTask == 3)
+    return SHALLOW_DEPTH;
   return NAN;
 }
 
-bool atDepth(float target) {
+bool atDepth(float target)
+{
   return fabsf(currentDepth - target) <= DEPTH_MARGIN;
 }
 
-State nextLegState() {
-  if (nextTask == 0 || nextTask == 2) return DESCENDING;
+State nextLegState()
+{
+  if (nextTask == 0 || nextTask == 2)
+    return DESCENDING;
   return ASCENDING;
 }
 
-bool holdComplete(uint32_t now) {
+// resets on drift-out per mate rubric; returns true when 30 s in-band
+bool holdComplete(uint32_t now)
+{
   float target = targetDepth();
-  uint32_t dt  = now - lastHoldUpdateMs;
+  uint32_t dt = now - lastHoldUpdateMs;
   lastHoldUpdateMs = now;
 
-  if (!atDepth(target)) {
+  if (!atDepth(target))
+  {
     holdCounter = 0;
     return false;
   }
@@ -175,33 +241,37 @@ bool holdComplete(uint32_t now) {
   return holdCounter >= TARGET_HOLD_MS;
 }
 
-void runPID(float target, float dt, Direction /*dir*/) {
-  // When gains get split:
-  //   if (dir == DIR_UP)  pid.setGains(Kp_up,   Ki_up,   Kd_up);
-  //   else                pid.setGains(Kp_down, Ki_down, Kd_down);
-  double pidOut      = pid.calculateControlSignal(target, currentDepth, dt);
-  long   targetSteps = motor.volumeToSteps(pidOut);
+// pid -> volume_mL -> steps -> setTargetPosition (non-blocking)
+// dir arg is plumbing for future gain-splitting; unused today
+void runPID(float target, float dt, Direction /*dir*/)
+{
+  double volume_mL = pid.calculateControlSignal(target, currentDepth, dt);
+  long targetSteps = motor.volumeToSteps(volume_mL);
   motor.setTargetPosition(targetSteps);
-  // motor.runMotor(); // assumed non-blocking: one step-tick per call
 }
 
-void logIfDue(uint32_t now) {
-  if (now - lastLogMs < 1000) return;
+void logIfDue(uint32_t now)
+{
+  if (now - lastLogMs < 1000)
+    return;
   lastLogMs = now;
 
   DataPacket pkt = {};
   fillPacketHeader(pkt);
-  pkt.timestamp_s  = now / 1000;
+  pkt.timestamp_s = now / 1000;
   pkt.pressure_kPa = currentPressure;
-  pkt.depth_m      = currentDepth;
+  pkt.depth_m = currentDepth;
   logger.log(pkt);
 }
 
-bool surfacedAndStable(uint32_t now) {
+// true when motor at zero AND depth stable near surface for 3s
+bool surfacedAndStable(uint32_t now)
+{
   uint32_t dt = now - lastSurfaceUpdate;
   lastSurfaceUpdate = now;
 
-  if (currentDepth > SURFACE_DEPTH_M) {
+  if (currentDepth > SURFACE_DEPTH_M)
+  {
     surfaceStableMs = 0;
     return false;
   }
@@ -209,12 +279,14 @@ bool surfacedAndStable(uint32_t now) {
   return (surfaceStableMs >= SURFACE_STABLE_MS) && motor.isAtTarget();
 }
 
-bool depthIsSane(float d) {
+bool depthIsSane(float d)
+{
   return !isnan(d) && d >= MIN_VALID_DEPTH_M && d <= MAX_VALID_DEPTH_M;
 }
 
-// Safe failure path: empty the syringe and try to surface.
-void abortToSurfacing(uint32_t now) {
+// safe failure path: empty syringe and try to surface
+void abortToSurfacing(uint32_t now)
+{
   Serial.print(F("[ABORT] state="));
   Serial.print((int)currentState);
   Serial.print(F(" t="));
@@ -223,173 +295,290 @@ void abortToSurfacing(uint32_t now) {
   enterState(SURFACING, now);
 }
 
-
-// ==================== Arduino entry points ====================
-
-void setup() {
-  Serial.begin(115200);
-  sensor.init();
-  motor.motorInit();
-  sender.init();
-
-  uint32_t now = millis();
-  lastLoopMs     = now;
-  stateEnteredMs = now;
-  currentState   = PRE_COMM;
-  prevState      = PRE_COMM;
-  // Note: sender should start with a clean ACK table. If ESPNowSender caches
-  // ACKs across resets (unlikely but possible), clear it here.
+// permanent trap: used when boot-time init fails. loop() never runs.
+void trapPermanent(const __FlashStringHelper *reason)
+{
+  while (true)
+  {
+    Serial.print(F("[FATAL] "));
+    Serial.println(reason);
+    delay(1000);
+    yield();
+  }
 }
 
-void loop() {
+// ============================================================
+// setup
+// ============================================================
+
+void setup()
+{
+  Serial.begin(115200);
+  delay(100);
+
+  sensor.init();
+  sender.init();
+
+  // motor init retry loop; trap if permanently broken
+  uint32_t initStart = millis();
+  bool motorReady = false;
+  while (millis() - initStart < INIT_RETRY_BUDGET_MS)
+  {
+    if (motor.motorInit())
+    {
+      motorReady = true;
+      break;
+    }
+    Serial.println(F("[BOOT] motorInit failed, retrying..."));
+    delay(INIT_RETRY_MS);
+  }
+  if (!motorReady)
+  {
+    trapPermanent(F("motorInit permanently failed; retrieve float"));
+  }
+
+  // on-deck calibration (in air). sensor is at the bottom of the float,
+  // which is also mate's scoring reference for deep hold. calibrating in
+  // air means "depth = 0" = atmospheric, so later readings directly
+  // represent true sensor depth below waterline.
+  sensor.calibrateSurface();
+  delay(100);
+  float depthAfterCal = sensor.getDepth();
+  if (depthAfterCal > ONDECK_DEPTH_THRESHOLD_M)
+  {
+    Serial.print(F("[WARN] on-deck depth="));
+    Serial.print(depthAfterCal, 3);
+    Serial.println(F(" m; float may already be submerged"));
+  }
+  else
+  {
+    Serial.print(F("[BOOT] on-deck cal ok, depth="));
+    Serial.print(depthAfterCal, 3);
+    Serial.println(F(" m"));
+  }
+
   uint32_t now = millis();
-  if (now - lastLoopMs < LOOP_MS) return;
+  lastLoopMs = now;
+  stateEnteredMs = now;
+  currentState = PRE_COMM;
+  prevState = PRE_COMM;
+  homingOk = false;
+}
+
+// ============================================================
+// loop
+// ============================================================
+
+void loop()
+{
+  uint32_t now = millis();
+  if (now - lastLoopMs < LOOP_MS)
+    return;
 
   float dt = (now - lastLoopMs) / 1000.0f;
-  if (dt > MAX_DT_S) dt = MAX_DT_S; // clamp after any blocking hiccup
+  if (dt > MAX_DT_S)
+    dt = MAX_DT_S;
   lastLoopMs = now;
 
-  // --- Sensor read with sanity filter ---
+  // sensor read with sanity filter
   float d = sensor.getDepth();
   float p = sensor.getPressure_kPa();
-  if (depthIsSane(d)) {
-    currentDepth   = d;
+  if (depthIsSane(d))
+  {
+    currentDepth = d;
     lastValidDepth = d;
-  } else {
-    currentDepth = lastValidDepth; // hold the last good reading
+    currentPressure = p;
   }
-  currentPressure = p;
+  else
+  {
+    currentDepth = lastValidDepth;
+    // pressure left at last good value
+  }
 
-  // --- State machine ---
-  switch (currentState) {
+  switch (currentState)
+  {
 
-    case PRE_COMM: {
-      // check ack first
-      if (sender.hasAckFor(nextSequence)) {
-        nextSequence++;
-        sensor.calibrateSurface();
-        motor.homeMotor();
-        pid.reset();
+  // ----------------------------------------
+  // pre_comm: active handshake, no auto-dive
+  // ----------------------------------------
+  case PRE_COMM:
+  {
+    // beacon once per second
+    if (now - lastBeaconMs >= 1000)
+    {
+      lastBeaconMs = now;
+
+      DataPacket pkt = {};
+      fillPacketHeader(pkt);
+      pkt.msgType = PKT_READY;
+      pkt.seq = nextSequence;
+      pkt.depth_m = currentDepth;
+      pkt.pressure_kPa = currentPressure;
+      pkt.timestamp_s = now / 1000;
+      sender.send(pkt);
+    }
+
+    // on ack: attempt homing. no recalibration here (already done on deck).
+    // success -> descending. failure -> stay, beacon homingOk=false, re-ack retries.
+    if (sender.hasAckFor(nextSequence))
+    {
+      nextSequence++;
+      pid.reset();
+
+      bool stalled = motor.homeMotor();
+      if (stalled)
+      {
+        homingOk = true;
         enterState(DESCENDING, now);
-        break;
       }
-      
-      // Beacon once per second until the station ACKs our sequence number.
-      if (now - lastBeaconMs >= 1000) {
-        lastBeaconMs = now;
-
-        DataPacket pkt = {};
-        fillPacketHeader(pkt);
-        pkt.msgType      = PKT_READY;
-        pkt.seq          = nextSequence;
-        pkt.depth_m      = currentDepth;
-        pkt.pressure_kPa = currentPressure;
-        pkt.timestamp_s  = now / 1000;
-        sender.send(pkt);
-      }
-
-      if (sender.hasAckFor(nextSequence)) {
-        nextSequence++;
-        sensor.calibrateSurface(); // zero depth at real waterline
-        motor.homeMotor();
-        pid.reset();
-        enterState(DESCENDING, now);
-        break;
-      }
-
-      // Deliberately never auto-advance on timeout: we only dive on ACK.
-      if (!precommWarned && now - stateEnteredMs >= PRECOMM_WARN_MS) {
-        precommWarned = true;
-        Serial.println(F("[WARN] PRE_COMM unacked > 5 min, still beaconing"));
+      else
+      {
+        homingOk = false;
+        Serial.println(F("[PRE_COMM] homing failed, awaiting re-ack"));
       }
       break;
     }
 
-    case DESCENDING: {
-      runPID(targetDepth(), dt, DIR_DOWN);
-      logIfDue(now);
-
-      if (atDepth(targetDepth())) {
-        enterState(HOLDING, now);
-      } else if (now - stateEnteredMs >= DESCEND_TIMEOUT_MS) {
-        abortToSurfacing(now);
-      }
-      break;
+    if (!precommWarned && now - stateEnteredMs >= PRECOMM_WARN_MS)
+    {
+      precommWarned = true;
+      Serial.println(F("[WARN] pre_comm unacked > 5 min, still beaconing"));
     }
+    break;
+  }
 
-    case ASCENDING: {
+  // ----------------------------------------
+  // descending: pull water in, sink to deep target
+  // ----------------------------------------
+  case DESCENDING:
+  {
+    runPID(targetDepth(), dt, DIR_DOWN);
+    logIfDue(now);
+
+    if (atDepth(targetDepth()))
+    {
+      enterState(HOLDING, now);
+    }
+    else if (now - stateEnteredMs >= DESCEND_TIMEOUT_MS)
+    {
+      abortToSurfacing(now);
+    }
+    break;
+  }
+
+  // ----------------------------------------
+  // ascending: push water out, rise to shallow target
+  // anti-breach floor overrides pid if we get too shallow
+  // ----------------------------------------
+  case ASCENDING:
+  {
+    if (currentDepth < BREACH_GUARD_M)
+    {
+      // override: fill syringe fully to force sinking
+      motor.setTargetPosition(motor.volumeToSteps(SYRINGE_MAX_ML));
+      Serial.print(F("[BREACH_GUARD] depth="));
+      Serial.println(currentDepth, 2);
+    }
+    else
+    {
       runPID(targetDepth(), dt, DIR_UP);
-      logIfDue(now);
+    }
+    logIfDue(now);
 
-      if (atDepth(targetDepth())) {
-        enterState(HOLDING, now);
-      } else if (now - stateEnteredMs >= ASCEND_TIMEOUT_MS) {
-        abortToSurfacing(now);
+    if (atDepth(targetDepth()))
+    {
+      enterState(HOLDING, now);
+    }
+    else if (now - stateEnteredMs >= ASCEND_TIMEOUT_MS)
+    {
+      abortToSurfacing(now);
+    }
+    break;
+  }
+
+  // ----------------------------------------
+  // holding: maintain target for 30s, drift resets timer
+  // ----------------------------------------
+  case HOLDING:
+  {
+    Direction dir = (targetDepth() == DEEP_DEPTH) ? DIR_DOWN : DIR_UP;
+    runPID(targetDepth(), dt, dir);
+    logIfDue(now);
+
+    if (holdComplete(now))
+    {
+      nextTask++;
+      pid.reset();
+      if (nextTask >= 4)
+      {
+        enterState(SURFACING, now);
       }
-      break;
-    }
-
-    case HOLDING: {
-      Direction dir = (targetDepth() == DEEP_DEPTH) ? DIR_DOWN : DIR_UP;
-      runPID(targetDepth(), dt, dir);
-      logIfDue(now);
-
-      if (holdComplete(now)) {
-        nextTask++;
-        pid.reset();
-
-        if (nextTask >= 4) {
-          enterState(SURFACING, now);
-        } else {
-          enterState(nextLegState(), now);
-        }
-      } else if (now - stateEnteredMs >= HOLD_TIMEOUT_MS) {
-        // Couldn't stabilize for 30 s within a 2-minute budget: abort up.
-        abortToSurfacing(now);
+      else
+      {
+        enterState(nextLegState(), now);
       }
-      break;
     }
+    else if (now - stateEnteredMs >= HOLD_TIMEOUT_MS)
+    {
+      abortToSurfacing(now);
+    }
+    break;
+  }
 
-    case SURFACING: {
-      // motor.runMotor(); // non-blocking step toward target=0 set at entry
-      logIfDue(now);
+  // ----------------------------------------
+  // surfacing: target=0 set on entry, motor runs autonomously
+  // ----------------------------------------
+  case SURFACING:
+  {
+    logIfDue(now);
 
-      if (surfacedAndStable(now)) {
-        enterState(RECOVERED, now);
-      } else if (now - stateEnteredMs >= SURFACE_TIMEOUT_MS) {
-        // If we can't confirm surface in 60 s, assume we're close enough
-        // and proceed to transmit anyway — better to get partial data out
-        // than sit silent until battery dies.
-        Serial.println(F("[WARN] SURFACING timeout, forcing RECOVERED"));
-        enterState(RECOVERED, now);
+    if (surfacedAndStable(now))
+    {
+      enterState(RECOVERED, now);
+    }
+    else if (now - stateEnteredMs >= SURFACE_TIMEOUT_MS)
+    {
+      Serial.println(F("[WARN] surfacing timeout, forcing recovered"));
+      enterState(RECOVERED, now);
+    }
+    break;
+  }
+
+  // ----------------------------------------
+  // recovered: marker state, immediate advance to transmit
+  // ----------------------------------------
+  case RECOVERED:
+  {
+    enterState(TRANSMIT, now);
+    break;
+  }
+
+  // ----------------------------------------
+  // transmit: drain ram buffer over esp-now
+  // ----------------------------------------
+  case TRANSMIT:
+  {
+    if (txIndex < logger.count())
+    {
+      if (now - lastTxMs >= 10)
+      {
+        sender.send(logger.at(txIndex));
+        txIndex++;
+        lastTxMs = now;
       }
-      break;
     }
-
-    case RECOVERED: {
-      // Brief marker state. Could hang a post-recovery handshake here later.
-      enterState(TRANSMIT, now);
-      break;
+    else
+    {
+      motor.sleepMotor();
+      enterState(DONE, now);
     }
+    break;
+  }
 
-    case TRANSMIT: {
-      // Non-blocking: one packet per loop tick (every LOOP_MS = 100 ms).
-      // For a ~5-minute dive logging at 1 Hz, that's ~300 packets -> 30 s TX.
-      if (txIndex < logger.count()) {
-        if (now - lastTxMs >= 10) { // minimum 10 ms between packets
-          sender.send(logger.at(txIndex));
-          txIndex++;
-          lastTxMs = now;
-        }
-      } else {
-        motor.sleepMotor();
-        enterState(DONE, now);
-      }
-      break;
-    }
-
-    case DONE:
-      // Idle until power cycle / retrieval.
-      break;
+  // ----------------------------------------
+  // done: idle until retrieval
+  // ----------------------------------------
+  case DONE:
+    break;
   }
 }
