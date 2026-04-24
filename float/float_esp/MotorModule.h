@@ -1,4 +1,4 @@
-/ MotorModule.h
+// MotorModule.h
 // Non-blocking stepper control for the float's buoyancy engine.
 // Uses FastAccelStepper for step generation (hardware-timer based on ESP32)
 // and TMC2209 over UART for current/stall configuration.
@@ -21,8 +21,8 @@
 // TODO: confirm against final wiring before pool test
 #define STEP_PIN 25
 #define DIR_PIN 26
-#define RX_PIN 16 
-#define TX_PIN 17 
+#define RX_PIN 16
+#define TX_PIN 17
 
 // Microstep pins: NOT USED when TMC2209 microstepping is configured via UART.
 // Left defined for wiring reference only.
@@ -33,15 +33,15 @@
 #define BAUD_RATE 115200
 #define RUN_CURRENT 80
 #define HOLD_CURRENT 40
-#define STALL_SENSITIVITY 5 
+#define STALL_SENSITIVITY 5
 
 // ---- Mechanical config ----
 // STEPS_PER_ML: microsteps required to displace 1 mL of syringe volume.
 // Value depends on microstepping setting (TMC2209 default: 8x) and leadscrew pitch.
 // TODO: verify empirically on bench (mark syringe, count steps per mL)
 #define STEPS_PER_ML 200
-#define SYRINGE_MAX_ML 50
-#define MAX_STEPS (STEPS_PER_ML * SYRINGE_MAX_ML) // 10,000 steps full stroke
+#define SYRINGE_MAX_ML 50.0f
+#define MAX_STEPS ((long)(STEPS_PER_ML * SYRINGE_MAX_ML))
 #define MIN_STEPS 0
 
 // ---- Motion config ----

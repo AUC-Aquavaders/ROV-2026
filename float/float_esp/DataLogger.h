@@ -9,6 +9,7 @@
 class DataLogger {
 public:
   void log(const DataPacket& pkt);
+
   void replayAll(void (*callback)(const DataPacket&));
   void clear();
 
