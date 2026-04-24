@@ -18,7 +18,7 @@ from datetime import datetime
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from src.modules.pipe_length_measurement import PipeLengthMeasurement, MeasurementState, MeasurementMode
+from modules.pipe_length_measurement import PipeLengthMeasurement, MeasurementState, MeasurementMode
 
 
 class AppState:
@@ -42,10 +42,13 @@ class IcebergTrackingSystem:
 
         try:
             self.pipe_measure = PipeLengthMeasurement()
-            self.logger.info("Measurement module initialized successfully")
+            if self.pipe_measure.camera_available:
+                self.logger.info("Measurement module initialized successfully")
+            else:
+                self.logger.warning("Camera not available - running in simulation mode")
         except Exception as e:
             self.logger.error(f"Failed to initialize modules: {e}")
-            raise
+            self.pipe_measure = None
 
         self.running = False
         self.app_state = AppState.NORMAL
@@ -95,19 +98,53 @@ class IcebergTrackingSystem:
             elif state == MeasurementState.LIVE:
                 print("\u2717 Press C to CAPTURE first")
 
+    def _get_fallback_frame(self, width=640, height=480, message=""):
+        """Generate a placeholder frame when camera is unavailable."""
+        frame = np.zeros((height, width, 3), dtype=np.uint8)
+        # Add gradient background
+        for i in range(height):
+            frame[i, :] = [int(50 + i * 0.05), int(30 + i * 0.03), int(60 + i * 0.04)]
+        
+        # Add main status box
+        cv2.rectangle(frame, (width//2 - 120, height//2 - 80), (width//2 + 120, height//2 + 80), (0, 200, 255), 3)
+        
+        # Title
+        cv2.putText(frame, "CAMERA", (width//2 - 70, height//2 - 50),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+        cv2.putText(frame, "UNAVAILABLE", (width//2 - 90, height//2 - 20),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+        
+        # Message
+        if message:
+            cv2.putText(frame, message, (width//2 - 60, height//2 + 30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+        
+        # Instructions
+        cv2.putText(frame, "Press Q to Exit", (width//2 - 50, height//2 + 60),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
+        
+        return frame
+
     def run(self):
         """Main application loop."""
+        if self.pipe_measure is None:
+            self.logger.error("Cannot start - initialization failed")
+            return
+        
         self.logger.info("=== Starting Pipe Measurement System ===")
         self.running = True
 
         window_name = 'Pipe Length Measurement'
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(window_name, 1280, 720)
+        cv2.resizeWindow(window_name, 640, 480)
         cv2.setMouseCallback(window_name, self.mouse_callback)
 
-        depth_window = 'Depth Map'
-        cv2.namedWindow(depth_window, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(depth_window, 1280, 720)
+        # Only create depth window if camera is available
+        depth_window = None
+        if self.pipe_measure.camera_available:
+            depth_window = 'Depth Map'
+            cv2.namedWindow(depth_window, cv2.WINDOW_NORMAL)
+            cv2.resizeWindow(depth_window, 640, 480)
 
         try:
             while self.running:
@@ -116,20 +153,35 @@ class IcebergTrackingSystem:
 
                 color_frame, depth_frame = self.pipe_measure.get_frames()
 
-                if depth_frame is not None:
+                # If camera is not available, use fallback frame
+                if not self.pipe_measure.camera_available:
+                    color_frame = self._get_fallback_frame(640, 480, "Check camera connection")
+                    depth_frame = None
+
+                if depth_frame is not None and depth_window is not None:
                     depth_colormap = self.pipe_measure.get_depth_colormap(depth_frame)
                     if depth_colormap is not None and depth_colormap.size > 0:
+                        # Resize to fit window
+                        depth_colormap = cv2.resize(depth_colormap, (640, 480))
                         cv2.imshow(depth_window, depth_colormap)
 
                 if color_frame is None or color_frame.size == 0:
+                    # Display fallback if no frame
+                    fallback = self._get_fallback_frame(640, 480, "Waiting for frames...")
+                    cv2.imshow(window_name, fallback)
                     cv2.waitKey(1)
                     continue
+
+                # Ensure frame is correct size
+                if color_frame.shape[:2] != (480, 640):
+                    color_frame = cv2.resize(color_frame, (640, 480))
 
                 display_frame = None
 
                 if self.app_state == AppState.BROWSING_SESSIONS:
                     display_frame = self._get_session_browser_display(color_frame)
                     if display_frame is not None and display_frame.size > 0:
+                        display_frame = cv2.resize(display_frame, (640, 480))
                         cv2.imshow(window_name, display_frame)
                     key = cv2.waitKey(1) & 0xFF
                     self._handle_session_browser_key(key)
@@ -166,10 +218,15 @@ class IcebergTrackingSystem:
                         display_frame = self._get_burst_result_display()
 
                 if display_frame is not None and display_frame.size > 0:
+                    # Ensure correct size before display
+                    if display_frame.shape[:2] != (480, 640):
+                        display_frame = cv2.resize(display_frame, (640, 480))
                     self._draw_notification(display_frame)
                     cv2.imshow(window_name, display_frame)
                 else:
-                    color_copy = color_frame.copy() if color_frame is not None else np.zeros((720, 1280, 3), dtype=np.uint8)
+                    color_copy = color_frame.copy() if color_frame is not None else np.zeros((480, 640, 3), dtype=np.uint8)
+                    if color_copy.shape[:2] != (480, 640):
+                        color_copy = cv2.resize(color_copy, (640, 480))
                     self._draw_notification(color_copy)
                     cv2.imshow(window_name, color_copy)
 
@@ -407,7 +464,7 @@ class IcebergTrackingSystem:
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
             cv2.line(display, (x1, y1), (x2, y2), (0, 255, 255), 2)
 
-            dist = pm._calculate_distance_meters(x1, y1, pending[0][2], x2, y2, pending[1][2])
+            dist = pm._calculate_distance_between_points(x1, y1, pending[0][2], x2, y2, pending[1][2])
             cv2.rectangle(display, (w//2 - 80, 60), (w//2 + 80, 100), (0, 0, 0), -1)
             cv2.putText(display, f"Dist: {dist:.4f}m", (w//2 - 70, 90),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
@@ -427,7 +484,7 @@ class IcebergTrackingSystem:
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
             z1, z2 = carry[0][2], carry[1][2]
-            dist = pm._calculate_distance_meters(x1, y1, z1, x2, y2, z2)
+            dist = pm._calculate_distance_between_points(x1, y1, z1, x2, y2, z2)
             cv2.rectangle(display, (w//2 - 80, 60), (w//2 + 80, 100), (0, 0, 0), -1)
             cv2.putText(display, f"Est: {dist:.4f}m", (w//2 - 70, 90),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 255), 2)
@@ -723,7 +780,8 @@ class IcebergTrackingSystem:
     def cleanup(self):
         """Cleanup resources."""
         self.logger.info("Cleaning up...")
-        self.pipe_measure.cleanup()
+        if self.pipe_measure:
+            self.pipe_measure.cleanup()
         cv2.destroyAllWindows()
 
 

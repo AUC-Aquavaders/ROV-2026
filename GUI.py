@@ -22,6 +22,7 @@ import subprocess
 import sys
 import math
 import numpy as np
+from pathlib import Path
 
 # ── OAK-D / DepthAI ──────────────────────────────────────────────────────────
 try:
@@ -37,6 +38,14 @@ try:
 except ImportError:
     WEBVIEW_AVAILABLE = False
 
+# ── Length Measurement (Full Version) ────────────────────────────────────────
+sys.path.insert(0, str(Path(__file__).parent / "Length_measurement_Iceberg" / "final_product"))
+try:
+    from modules.pipe_length_measurement import PipeLengthMeasurement, MeasurementState, MeasurementMode
+    PIPE_MEASUREMENT_AVAILABLE = True
+except ImportError:
+    PIPE_MEASUREMENT_AVAILABLE = False
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 class CameraUI:
@@ -49,6 +58,8 @@ class CameraUI:
         # ── State ──────────────────────────────────────────────────────────
         self.pipeline      = None   # DepthAI pipeline
         self.q_rgb         = None   # output queue from OAK-D
+        self.q_depth       = None   # ✅ depth queue from OAK-D
+        self.latest_depth  = None   # ✅ latest depth frame
 
         # Fallback OpenCV cap (used when OAK-D is not available)
         self.cap           = None
@@ -68,6 +79,17 @@ class CameraUI:
         )
         self.ref_features = self._load_reference_images()
         self.detected_crabs = []
+
+        # ── Length Measurement (FULL VERSION - Burst + Live) ──────────────
+        self.pipe_measurement = None
+        if PIPE_MEASUREMENT_AVAILABLE:
+            try:
+                self.pipe_measurement = PipeLengthMeasurement(num_frames=30)
+                if not self.pipe_measurement.camera_available:
+                    print("⚠ Measurement camera initialization failed (will use main camera)")
+            except Exception as e:
+                print(f"✗ Failed to initialize PipeLengthMeasurement: {e}")
+                self.pipe_measurement = None
 
         # ── Build UI then start camera ─────────────────────────────────────
         self._build_ui()
@@ -183,6 +205,7 @@ class CameraUI:
 
         self.canvas = tk.Canvas(right, bg="#0a0a14", highlightthickness=0)
         self.canvas.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        self.canvas.bind("<Button-1>", self._on_canvas_click)  # ✅ Add measurement point clicking
         self._show_placeholder()
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -238,6 +261,18 @@ class CameraUI:
             # ✅ v3: queue created on the output object, no XLinkOut node needed
             self.q_rgb = preview_out.createOutputQueue(maxSize=4, blocking=False)
 
+            # ✅ Add stereo depth for measurement
+            try:
+                stereo = self.pipeline.create(dai.node.StereoDepth)
+                stereo.build(autoCreateCameras=True, size=(640, 480))
+                depth_out = stereo.depth
+                if depth_out:
+                    self.q_depth = depth_out.createOutputQueue(maxSize=4, blocking=False)
+                    print("✓ Depth stream enabled for measurements")
+            except Exception as e:
+                print(f"⚠ Depth not available: {e} (measurements will be in pixels)")
+                self.q_depth = None
+
             self.pipeline.start()
             self.is_running = True
             self.status_dot.config(fg="#00ff88")
@@ -258,6 +293,36 @@ class CameraUI:
                 if in_rgb is None:
                     continue
                 frame = in_rgb.getCvFrame()
+                
+                # ✅ Get depth if available
+                depth_frame = None
+                if self.q_depth:
+                    try:
+                        in_depth = self.q_depth.get()
+                        if in_depth is not None:
+                            depth_frame = in_depth.getFrame().astype(np.float32) / 1000.0
+                            self.latest_depth = depth_frame.copy()
+                    except:
+                        pass
+                
+                # Feed frames to PipeLengthMeasurement engine if available
+                if self.pipe_measurement and self.pipe_measurement.camera_available:
+                    if self.pipe_measurement.measurement_mode == MeasurementMode.LIVE_CONTINUOUS:
+                        # Update engine's latest frames
+                        self.pipe_measurement.latest_color = frame.copy()
+                        self.pipe_measurement.latest_depth = depth_frame
+                        
+                        # Process live measurement if enabled
+                        if self.pipe_measurement.live_is_measuring and depth_frame is not None:
+                            result = self.pipe_measurement.process_live_continuous_measurement(depth_frame)
+                            if not result.get('invalid', False):
+                                print(f"✓ Measurement: {result['pipe_length']*100:.2f} cm")
+                    
+                    elif self.pipe_measurement.measurement_mode == MeasurementMode.BURST_CAPTURE:
+                        # Store frames during burst capture
+                        if self.pipe_measurement.state == MeasurementState.CAPTURING:
+                            self.pipe_measurement.capture_burst_frame(frame, depth_frame)
+                
                 self._process_frame(frame)
             except Exception as e:
                 print(f"OAK-D feed error: {e}")
@@ -290,6 +355,10 @@ class CameraUI:
         if self.crab_detection_enabled:
             frame, self.detected_crabs = self._detect_crabs(frame)
 
+        # ✅ Apply measurement overlay if enabled
+        if self.measurement_enabled:
+            frame = self._apply_measurement_overlay(frame)
+
         if self.is_recording and self.video_writer:
             self.video_writer.write(frame)
 
@@ -297,6 +366,8 @@ class CameraUI:
         img   = Image.fromarray(rgb)
         cw    = max(self.canvas.winfo_width(), 640)
         ch    = max(self.canvas.winfo_height(), 480)
+        self.canvas_width = cw  # ✅ Store for click coordinate mapping
+        self.canvas_height = ch
         img   = img.resize((cw, ch), Image.LANCZOS)
         photo = ImageTk.PhotoImage(img)
         self.canvas.after(0, self._update_canvas, photo)
@@ -359,11 +430,27 @@ class CameraUI:
 
     # ── Length Measurement ────────────────────────────────────────────────────
     def _run_length_measurement(self):
-        script_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            "Length_measurement_Iceberg", "final_product", "main.py"
-        )
-        self._launch_script(script_path, "Length Measurement")
+        """Toggle length measurement mode (Full: Burst + Live Continuous)"""
+        if not self.pipe_measurement or not self.pipe_measurement.camera_available:
+            messagebox.showerror("Error", 
+                                "❌ Measurement system not initialized.\n"
+                                "Please ensure OAK-D camera is connected.")
+            return
+        
+        if self.pipe_measurement.measurement_mode == MeasurementMode.LIVE_CONTINUOUS:
+            # Switch to BURST mode
+            result = self.pipe_measurement.toggle_measurement_mode()
+            msg = "✓ BURST CAPTURE MODE ON\n\nControls:\n  C - Capture frames\n  Click P1, P2 on frozen frame\n  SPACE - Accept\n  N - Skip | B - Back | R - Reset"
+            color = "#ff6b9d"
+        else:
+            # Switch to LIVE mode
+            result = self.pipe_measurement.toggle_measurement_mode()
+            msg = "✓ LIVE CONTINUOUS MODE ON\n\nClick P1, P2 on camera feed to measure.\nResults accumulate for statistics."
+            color = "#1e90ff"
+        
+        self.length_btn.config(bg=color)
+        messagebox.showinfo("Length Measurement Mode", msg)
+        print(f"Mode switched: {result.get('message', 'OK')}")
 
     # ── Crab Detection ────────────────────────────────────────────────────────
     def _toggle_crab_detection(self):
@@ -447,6 +534,118 @@ class CameraUI:
         except Exception as e:
             print(f"Crab detection error: {e}")
             return frame, []
+
+    # ── Length Measurement Overlay ─────────────────────────────────────────────
+    def _apply_measurement_overlay(self, frame):
+        """Draw measurement overlay using full PipeLengthMeasurement engine"""
+        if not self.pipe_measurement or not self.pipe_measurement.camera_available:
+            return frame
+        
+        overlay = frame.copy()
+        h, w = frame.shape[:2]
+        
+        # LIVE CONTINUOUS mode
+        if self.pipe_measurement.measurement_mode == MeasurementMode.LIVE_CONTINUOUS:
+            if self.pipe_measurement.state == MeasurementState.LIVE:
+                points = self.pipe_measurement.live_points
+                
+                # Draw points
+                for i, (x, y) in enumerate(points):
+                    cv2.circle(overlay, (x, y), 6, (0, 255, 0), -1)
+                    cv2.circle(overlay, (x, y), 9, (255, 255, 255), 2)
+                    cv2.putText(overlay, f"P{i+1}", (x+10, y-5),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                
+                # Draw line and measurement if both points set
+                if len(points) == 2:
+                    cv2.line(overlay, points[0], points[1], (0, 255, 255), 2)
+                    mid_x = (points[0][0] + points[1][0]) // 2
+                    mid_y = (points[0][1] + points[1][1]) // 2
+                    
+                    if self.pipe_measurement.live_pipe_length:
+                        dist_m = self.pipe_measurement.live_pipe_length
+                        cv2.putText(overlay, f"{dist_m*100:.2f} cm", 
+                                   (mid_x - 50, mid_y - 15),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 3)
+                
+                # Status
+                status = f"LIVE MODE | Points: {len(points)}/2 | Measurements: {len(self.pipe_measurement.live_measurements)}"
+                cv2.putText(overlay, status, (10, 30),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 255), 2)
+                
+                if len(self.pipe_measurement.live_measurements) > 1:
+                    avg = np.mean(self.pipe_measurement.live_measurements) * 100
+                    std = np.std(self.pipe_measurement.live_measurements) * 100
+                    cv2.putText(overlay, f"Avg: {avg:.2f}±{std:.2f} cm", (10, 60),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 200, 100), 2)
+        
+        # BURST CAPTURE mode
+        elif self.pipe_measurement.measurement_mode == MeasurementMode.BURST_CAPTURE:
+            if self.pipe_measurement.state == MeasurementState.BURST_ANNOTATING:
+                frozen = self.pipe_measurement.frozen_color_frame
+                if frozen is not None:
+                    overlay = frozen.copy()
+                    points = self.pipe_measurement.burst_pending_points
+                    
+                    for i, (x, y, z) in enumerate(points):
+                        cv2.circle(overlay, (x, y), 6, (0, 255, 0), -1)
+                        cv2.circle(overlay, (x, y), 9, (255, 255, 255), 2)
+                        cv2.putText(overlay, f"P{i+1}", (x+10, y-5),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                    
+                    if len(points) == 2:
+                        cv2.line(overlay, (points[0][0], points[0][1]), 
+                                (points[1][0], points[1][1]), (0, 255, 255), 2)
+                        mid_x = (points[0][0] + points[1][0]) // 2
+                        mid_y = (points[0][1] + points[1][1]) // 2
+                        dist = self.pipe_measurement._calculate_distance_between_points(
+                            points[0][0], points[0][1], points[0][2],
+                            points[1][0], points[1][1], points[1][2]
+                        )
+                        cv2.putText(overlay, f"{dist*100:.2f} cm", (mid_x - 50, mid_y - 15),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 3)
+                    
+                    idx = self.pipe_measurement.burst_current_index
+                    total = len(self.pipe_measurement.burst_color_frames)
+                    cv2.putText(overlay, f"BURST: Frame {idx+1}/{total}", (10, 30),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 255), 2)
+        
+        return overlay
+
+    def _on_canvas_click(self, event):
+        """Handle canvas clicks for measurement point marking"""
+        if not self.pipe_measurement or not self.pipe_measurement.camera_available:
+            return
+        
+        x = int(event.x * 640 / self.canvas.winfo_width())
+        y = int(event.y * 480 / self.canvas.winfo_height())
+        
+        pm = self.pipe_measurement
+        mode = pm.measurement_mode
+        state = pm.state
+        
+        # LIVE CONTINUOUS mode
+        if mode == MeasurementMode.LIVE_CONTINUOUS and state == MeasurementState.LIVE:
+            result = pm.mark_point_live_continuous(x, y)
+            if result['success']:
+                print(f"✓ {result['message']}")
+            else:
+                print(f"✗ {result}")
+        
+        # BURST CAPTURE mode - annotation phase
+        elif mode == MeasurementMode.BURST_CAPTURE and state == MeasurementState.BURST_ANNOTATING:
+            pending = pm.burst_pending_points
+            
+            if len(pending) == 0:
+                result = pm.mark_burst_point(x, y)
+                print(f"✓ P1: {result['message']}")
+            elif len(pending) == 1:
+                result = pm.mark_burst_second_point(x, y)
+                print(f"✓ P2: {result['message']}")
+
+    def _calculate_distance_cm(self, x1, y1, x2, y2):
+        """Fallback distance calculation (not used with full PipeLengthMeasurement)"""
+        pass
 
     # ── Frequency Analysis ────────────────────────────────────────────────────
     def _run_frequency_analysis(self):
