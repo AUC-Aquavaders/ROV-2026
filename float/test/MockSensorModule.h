@@ -1,20 +1,12 @@
 // Pressure → depth conversion using BlueRobotics MS5837.
-
-#ifndef DB00CDF5_DED4_4EFF_A553_F056A437DCF8
-#define DB00CDF5_DED4_4EFF_A553_F056A437DCF8
 // Call calibrateSurface() once before diving to zero depth.
-
-#include <Wire.h>
-#include <MS5837.h>
-
+#pragma once
+#include <ctime>
 // Fluid parameters
 #define WATER_DENSITY   997.0f    // kg/m^3 freshwater (use 1025.0 for seawater)
 #define GRAVITY         9.80665f
 
-#define I2C_SDA_PIN  21
-#define I2C_SCL_PIN  22
-
-class SensorModule {
+class MockSensorModule {
 public:
   void   init();
   void   calibrateSurface();   // store current reading as "zero depth"
@@ -23,10 +15,6 @@ public:
   float  getDepth();
 
 private:
-  MS5837 _sensor;
   float _surfacePressure_kPa = 101.325f;  // default to 1 atm
   bool  _ok = false;
 };
-
-
-#endif /* DB00CDF5_DED4_4EFF_A553_F056A437DCF8 */

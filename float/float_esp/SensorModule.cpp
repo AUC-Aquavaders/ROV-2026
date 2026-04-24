@@ -4,7 +4,7 @@ void SensorModule::init() {
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
 
   // MS5837 startup can take a moment after power-up
-  delay(10);
+  delay(15);
 
   _ok = _sensor.begin(Wire);
   if (!_ok) {

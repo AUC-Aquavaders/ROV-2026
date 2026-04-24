@@ -4,10 +4,10 @@
 // Safe failure mode for any motion-state timeout is SURFACING (empty syringe,float to the surface). PRE_COMM does NOT auto-dive on timeout; it keeps beaconing forever because we never want an unacknowledged dive.
 
 #include "PIDController.h"
-#include "MotorModule.h"
-#include "SensorModule.h"
+#include "MockMotorModule.h"
+#include "MockSensorModule.h"
 #include "DataLogger.h"
-#include "ESPnow_Sender.h"
+#include "MockESPnow_Sender.h"
 #include "packet.h"
 #include <math.h>
 
@@ -47,10 +47,10 @@
 #define SYRINGE_MAX_ML 50.0
 
 PIDController pid(PID_KP_SHARED, PID_KI_SHARED, PID_KD_SHARED, 0.0, SYRINGE_MAX_ML);
-MotorModule   motor;
-SensorModule  sensor;
+MockMotorModule   motor;
+MockSensorModule  sensor;
 DataLogger    logger;
-ESPNowSender  sender;
+MockESPNowSender  sender;
 
 // -------------------- FSM --------------------
 enum State : uint8_t {
@@ -148,8 +148,15 @@ void fillPacketHeader(DataPacket& pkt) {
 }
 
 float targetDepth() {
-  if (nextTask == 0 || nextTask == 2) return DEEP_DEPTH;
-  if (nextTask == 1 || nextTask == 3) return SHALLOW_DEPTH;
+  if (nextTask == 0 || nextTask == 2) {
+    Serial.println("Target is deep depth");
+    return DEEP_DEPTH;
+  } 
+  
+  if (nextTask == 1 || nextTask == 3) {
+    Serial.println("Target is shallow depth");
+    return SHALLOW_DEPTH;
+  }
   return NAN;
 }
 
@@ -228,6 +235,8 @@ void abortToSurfacing(uint32_t now) {
 
 void setup() {
   Serial.begin(115200);
+  delay(2000); // give the monitor time to connect
+  Serial.println(F("=== SETUP START ==="));
   sensor.init();
   motor.motorInit();
   sender.init();
@@ -242,8 +251,17 @@ void setup() {
 }
 
 void loop() {
+  delay(2000);
   uint32_t now = millis();
-  if (now - lastLoopMs < LOOP_MS) return;
+  Serial.print("loop() now="); Serial.print(now);
+  Serial.print(" lastLoopMs="); Serial.println(lastLoopMs);
+
+  if (now - lastLoopMs < LOOP_MS) {
+    Serial.println("returning here");
+    return;
+  }
+
+  Serial.println("passed guard");
 
   float dt = (now - lastLoopMs) / 1000.0f;
   if (dt > MAX_DT_S) dt = MAX_DT_S; // clamp after any blocking hiccup
@@ -251,7 +269,11 @@ void loop() {
 
   // --- Sensor read with sanity filter ---
   float d = sensor.getDepth();
+  Serial.print("depth="); Serial.println(d);
+
   float p = sensor.getPressure_kPa();
+  Serial.print("pressure="); Serial.println(p);
+
   if (depthIsSane(d)) {
     currentDepth   = d;
     lastValidDepth = d;
@@ -260,6 +282,7 @@ void loop() {
   }
   currentPressure = p;
 
+  Serial.println(currentState);
   // --- State machine ---
   switch (currentState) {
 
@@ -273,10 +296,11 @@ void loop() {
         enterState(DESCENDING, now);
         break;
       }
-      
+
       // Beacon once per second until the station ACKs our sequence number.
       if (now - lastBeaconMs >= 1000) {
         lastBeaconMs = now;
+        Serial.println("lastLoopMs updated");
 
         DataPacket pkt = {};
         fillPacketHeader(pkt);
@@ -286,6 +310,7 @@ void loop() {
         pkt.pressure_kPa = currentPressure;
         pkt.timestamp_s  = now / 1000;
         sender.send(pkt);
+        Serial.println("sent packet");
       }
 
       if (sender.hasAckFor(nextSequence)) {
@@ -294,6 +319,7 @@ void loop() {
         motor.homeMotor();
         pid.reset();
         enterState(DESCENDING, now);
+        Serial.println("ack received");
         break;
       }
 
@@ -302,10 +328,14 @@ void loop() {
         precommWarned = true;
         Serial.println(F("[WARN] PRE_COMM unacked > 5 min, still beaconing"));
       }
+
+      Serial.println("at end of PRE-COMM");
       break;
+
     }
 
     case DESCENDING: {
+      Serial.println("IN DESCENDING CASE");
       runPID(targetDepth(), dt, DIR_DOWN);
       logIfDue(now);
 
@@ -318,18 +348,21 @@ void loop() {
     }
 
     case ASCENDING: {
+      Serial.println("IN ASCENDING CASE");
       runPID(targetDepth(), dt, DIR_UP);
       logIfDue(now);
 
       if (atDepth(targetDepth())) {
         enterState(HOLDING, now);
-      } else if (now - stateEnteredMs >= ASCEND_TIMEOUT_MS) {
+      } 
+      else if (now - stateEnteredMs >= ASCEND_TIMEOUT_MS) {
         abortToSurfacing(now);
       }
       break;
     }
 
     case HOLDING: {
+      Serial.println("IN HOLDING CASE");
       Direction dir = (targetDepth() == DEEP_DEPTH) ? DIR_DOWN : DIR_UP;
       runPID(targetDepth(), dt, dir);
       logIfDue(now);
@@ -351,6 +384,7 @@ void loop() {
     }
 
     case SURFACING: {
+      Serial.println("IN SURFACING CASE");
       motor.runMotor(); // non-blocking step toward target=0 set at entry
       logIfDue(now);
 
@@ -367,12 +401,14 @@ void loop() {
     }
 
     case RECOVERED: {
+      Serial.println("IN RECOVERED CASE");
       // Brief marker state. Could hang a post-recovery handshake here later.
       enterState(TRANSMIT, now);
       break;
     }
 
     case TRANSMIT: {
+      Serial.println("IN TRANSMIT CASE");
       // Non-blocking: one packet per loop tick (every LOOP_MS = 100 ms).
       // For a ~5-minute dive logging at 1 Hz, that's ~300 packets -> 30 s TX.
       if (txIndex < logger.count()) {
@@ -390,6 +426,8 @@ void loop() {
 
     case DONE:
       // Idle until power cycle / retrieval.
+      Serial.println("DONE!");
       break;
   }
 }
+
