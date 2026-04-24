@@ -1,149 +1,126 @@
-#pragma once
-#include <TMC2209.h>
+/ MotorModule.h
+// Non-blocking stepper control for the float's buoyancy engine.
+// Uses FastAccelStepper for step generation (hardware-timer based on ESP32)
+// and TMC2209 over UART for current/stall configuration.
 
-// TODO: FIX THE PIN NUMBERS
+// API supports both:
+//   - Position mode: setTargetPosition(steps)  — used by RECOVER / homing checks
+//   - Velocity mode: setVelocity(stepsPerSec)  — used by the PID control loop
+
+// Sign convention for velocity:
+//   +velocity = pull water IN  = syringe fills  = float sinks
+//   -velocity = push water OUT = syringe empties = float rises
+
+#pragma once
+
+#include <Arduino.h>
+#include <TMC2209.h>
+#include <FastAccelStepper.h>
+
+// ---- Pin assignments ----
+// TODO: confirm against final wiring before pool test
 #define STEP_PIN 25
 #define DIR_PIN 26
-#define RX_PIN 16
-#define TX_PIN 17
+#define RX_PIN 16 
+#define TX_PIN 17 
 
-#define MS1_PIN 32 // motor step
+// Microstep pins: NOT USED when TMC2209 microstepping is configured via UART.
+// Left defined for wiring reference only.
+#define MS1_PIN 32
 #define MS2_PIN 33
 
-#define BAUD_RATE 115200 // TODO: review baud rate
-#define RUN_CURRENT 80 // TODO: review run current
-#define HOLD_CURRENT 40 // TODO: review hold current
-#define STALL_SENSITIVITY 5 // TODO: review stall sensitivity
+// ---- Driver config ---- (Stall Sensitivity should be tested
+#define BAUD_RATE 115200
+#define RUN_CURRENT 80
+#define HOLD_CURRENT 40
+#define STALL_SENSITIVITY 5 
 
-#define STEPS_PER_ML 200 // TODO: REVIEW STEPS PER ML
-#define MAX_STEPS (STEPS_PER_ML * 50) // 50 ml syringe
+// ---- Mechanical config ----
+// STEPS_PER_ML: microsteps required to displace 1 mL of syringe volume.
+// Value depends on microstepping setting (TMC2209 default: 8x) and leadscrew pitch.
+// TODO: verify empirically on bench (mark syringe, count steps per mL)
+#define STEPS_PER_ML 200
+#define SYRINGE_MAX_ML 50
+#define MAX_STEPS (STEPS_PER_ML * SYRINGE_MAX_ML) // 10,000 steps full stroke
+#define MIN_STEPS 0
 
-#define MIN_POSITION 0
+// ---- Motion config ----
+// MAX_SPEED_HZ: cap on step rate (steps/sec). PID velocity commands are clamped to this.
+// At 8000 Hz we can traverse full 10,000-step stroke in ~1.25s — plenty fast for buoyancy control.
+#define MAX_SPEED_HZ 8000
+// MAX_ACCEL: smoothness ramp (steps/sec^2). High accel = snappy response; low = gentle.
+#define MAX_ACCEL 20000
 
-class MotorModule {
+// ---- Homing config ----
+// Homing steps at ~400-500 steps/sec (limited by HOMING_STEP_US + UART read time).
+// At that rate, traversing the full 10,000-step stroke takes ~20-25 seconds.
+// 30 s timeout guarantees we reach the end stop from any starting position.
+#define HOMING_TIMEOUT_MS 30000
+#define HOMING_STEP_US 1000 // half-period between pulses during homing
 
-public: 
+class MotorModule
+{
+public:
+  MotorModule();
 
-  MotorModule() {
-    currentPosition = 0;
-    targetPosition = 0;
-  }
+  // ---- Lifecycle ----
+  // Initialize pins, UART, FastAccelStepper engine, and TMC2209 driver.
+  // Call once from setup(). Returns true on success.
+  bool motorInit();
 
-  void motorInit();
-  // {
-  //   pinMode(STEP_PIN, OUTPUT);
-  //   pinMode(DIR_PIN, OUTPUT);
-      
-  //   // Start UART communication on ESP32 Serial2
-  //   Serial2.begin(BAUD_RATE);
-  //   driver.setup(Serial2, BAUD_RATE, TMC2209::SERIAL_ADDRESS_0, RX_PIN, TX_PIN);
-      
-  //   // Set power levels (MKS TMC2209 V2.0 supports up to 2A, Nema 17HS4401S is rated 1.7A) 
-  //   driver.setRunCurrent(RUN_CURRENT);
-  //   driver.setHoldCurrent(HOLD_CURRENT);
-      
-    
-  //   driver.enableCoolStep(); 
-  //   driver.enableAutomaticCurrentScaling(); 
-  //   driver.enable();
-  // }                           
+  // Retract syringe to physical zero using StallGuard.
+  // BLOCKING but watchdog-safe (calls yield() each iteration).
+  // Resets position counters to 0 on success.
+  // Returns true if stall detected, false on timeout.
+  bool homeMotor();
 
-  void homeMotor();
-  // {
-  //   driver.setStallGuardThreshold(STALL_SENSITIVITY);
-  //   digitalWrite(DIR_PIN, LOW); // Set direction to retract (empty the syringe)
-      
-  //   bool stalled = false;
-  //   while (!stalled) {
-  //       // Take a step slowly
-  //       digitalWrite(STEP_PIN, HIGH);
-  //       delayMicroseconds(1000); 
-  //       digitalWrite(STEP_PIN, LOW);
-  //       delayMicroseconds(1000);
-          
-  //       // Read StallGuard result. A low number means we hit the physical wall.
-  //       if (driver.getStallGuardResult() < 5) { 
-  //           stalled = true;
-  //       }
-  //   }
-      
-  //   // Reset our memory to 0 
-  //   currentPosition = 0;
-  //   targetPosition = 0;
-  // }                           
+  // ---- Command interface ----
 
-  // Takes output from PID and converts to steps
-  long volumeToSteps(double volume);
-  // { 
-  //   return (long)(volume * STEPS_PER_ML);
-  // }      
+  // Position mode: command motor to drive to absolute step position.
+  // Rejects out-of-range targets (returns false, makes no change).
+  // Uses FastAccelStepper's ramp generator (respects MAX_SPEED_HZ, MAX_ACCEL).
+  bool setTargetPosition(long targetSteps);
 
-  void setTargetPosition(long targetSteps);
-  // {
-  //   targetPosition = targetSteps;
-  //   checkLimits(); // Additional safety check
-      
-  //   // Compare target to memory to determine physical motor direction
-  //   if (targetPosition > currentPosition) {
-  //       digitalWrite(DIR_PIN, HIGH); // Pulling water IN
-  //   } else if (targetPosition < currentPosition) {
-  //       digitalWrite(DIR_PIN, LOW);  // Pushing water OUT
-  //   }
-  // }    
+  // Velocity mode: command continuous motion at given signed step rate.
+  //   +steps/sec = fill syringe (sink)
+  //   -steps/sec = empty syringe (rise)
+  //    0         = stop
+  // Auto-clamps to 0 when position is at/past the limit in the commanded direction.
+  // Magnitude is clamped to MAX_SPEED_HZ.
+  void setVelocity(long stepsPerSec);
 
-  void runMotor();
-  // {
-  //   // Only pulse the motor if we haven't reached the PID's target yet
-  //   if (currentPosition != targetPosition) {
-          
-  //       digitalWrite(STEP_PIN, HIGH);
-  //       delayMicroseconds(500); 
-  //       digitalWrite(STEP_PIN, LOW);
-  //       delayMicroseconds(500);
-          
-  //       // Update the internal tracker
-  //       if (targetPosition > currentPosition) {
-  //           currentPosition++;
-  //       } else {
-  //           currentPosition--;
-  //       }
-  //   }
-  // }                           
+  // Decelerate gracefully and stop. Safe to call anytime.
+  void stop();
 
+  // ---- Power / hold ----
+  // Enable/disable strong electrical braking when motor is idle.
   void setHoldingMode(bool enable);
-  // {  
-  //   if (enable) {
-  //       driver.setStandstillMode(TMC2209::STRONG_BRAKING);
-  //   } else {
-  //       driver.setStandstillMode(TMC2209::NORMAL);
-  //   }
-  // }          
 
+  // Disable driver output entirely (save battery at surface).
   void sleepMotor();
-  // { // For saving battery 
-  //   driver.disable();
-  // }                          
 
-  void checkLimits();
-  // { // Secondary safety check (Primary in PID)
-  //   if (targetPosition > MAX_STEPS) targetPosition = MAX_STEPS;
-  //   if (targetPosition < 0) targetPosition = 0;
-  // }                        
+  // ---- Status ----
+  bool isAtTarget() const;
+  long getCurrentPosition() const;
+  bool isRunning() const;
 
-
-  bool isAtTarget();
-  // {
-  //     return (currentPosition == targetPosition);
-  // }
-
-  long getCurrentPosition();
-  //  {
-  //   return currentPosition;
-  // }
+  // ---- Utility ----
+  static long volumeToSteps(double volume_mL);
 
 private:
-  TMC2209 driver;       
-  long currentPosition; // Internal memory tracker
-  long targetPosition;  // Destination memory
+  // Hardware
+  TMC2209 _driver;
+  FastAccelStepperEngine _engine;
+  FastAccelStepper *_stepper;
 
+  // Velocity-mode bookkeeping:
+  // FastAccelStepper's runForward/runBackward is continuous; we track the
+  // currently-commanded signed velocity so setVelocity() can detect sign flips
+  // and re-issue runForward/runBackward only when direction actually changes.
+  long _commandedVelocity;
+
+  // Helpers
+  long clampSpeed(long stepsPerSec) const;
+  bool atForwardLimit() const; // at or past MAX_STEPS
+  bool atReverseLimit() const; // at or past MIN_STEPS (0)
 };
