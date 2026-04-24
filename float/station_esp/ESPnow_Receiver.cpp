@@ -37,6 +37,7 @@ void sendAck(const uint8_t mac[6], uint16_t seqToAck) {
   ack.state = 0;
 
   esp_now_send(mac, (uint8_t *)&ack, sizeof(ack));
+  Serial.println("#Ack packet sent to float");
 }
 
 //Receive Callback

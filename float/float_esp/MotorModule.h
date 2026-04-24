@@ -1,4 +1,4 @@
-/ MotorModule.h
+// MotorModule.h
 // Non-blocking stepper control for the float's buoyancy engine.
 // Uses FastAccelStepper for step generation (hardware-timer based on ESP32)
 // and TMC2209 over UART for current/stall configuration.

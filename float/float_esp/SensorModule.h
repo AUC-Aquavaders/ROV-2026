@@ -1,7 +1,5 @@
+#pragma once
 // Pressure → depth conversion using BlueRobotics MS5837.
-
-#ifndef DB00CDF5_DED4_4EFF_A553_F056A437DCF8
-#define DB00CDF5_DED4_4EFF_A553_F056A437DCF8
 // Call calibrateSurface() once before diving to zero depth.
 
 #include <Wire.h>
@@ -27,6 +25,3 @@ private:
   float _surfacePressure_kPa = 101.325f;  // default to 1 atm
   bool  _ok = false;
 };
-
-
-#endif /* DB00CDF5_DED4_4EFF_A553_F056A437DCF8 */

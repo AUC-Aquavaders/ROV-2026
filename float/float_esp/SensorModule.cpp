@@ -6,7 +6,9 @@ void SensorModule::init() {
   // MS5837 startup can take a moment after power-up
   delay(15);
 
-  _ok = _sensor.begin(Wire);
+  // _ok = _sensor.begin(Wire);
+  _ok = _sensor.init();
+
   if (!_ok) {
     return;
   }

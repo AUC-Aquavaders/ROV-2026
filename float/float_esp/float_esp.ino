@@ -182,7 +182,7 @@ void runPID(float target, float dt, Direction /*dir*/) {
   double pidOut      = pid.calculateControlSignal(target, currentDepth, dt);
   long   targetSteps = motor.volumeToSteps(pidOut);
   motor.setTargetPosition(targetSteps);
-  motor.runMotor(); // assumed non-blocking: one step-tick per call
+  // motor.runMotor(); // assumed non-blocking: one step-tick per call
 }
 
 void logIfDue(uint32_t now) {
@@ -351,7 +351,7 @@ void loop() {
     }
 
     case SURFACING: {
-      motor.runMotor(); // non-blocking step toward target=0 set at entry
+      // motor.runMotor(); // non-blocking step toward target=0 set at entry
       logIfDue(now);
 
       if (surfacedAndStable(now)) {
